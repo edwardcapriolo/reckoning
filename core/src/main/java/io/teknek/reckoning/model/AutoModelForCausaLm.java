@@ -18,6 +18,8 @@ import io.teknek.reckoning.model.gpt2.Gpt2Config;
 import io.teknek.reckoning.model.gpt2.Gpt2Model;
 import io.teknek.reckoning.model.granitemoehybrid.GraniteMoeHybridConfig;
 import io.teknek.reckoning.model.granitemoehybrid.GraniteMoeHybridModel;
+import io.teknek.reckoning.model.granite.GraniteConfig;
+import io.teknek.reckoning.model.granite.GraniteModel;
 import io.teknek.reckoning.model.llama.LlamaConfig;
 import io.teknek.reckoning.model.llama.LlamaModel;
 import io.teknek.reckoning.model.mistral.MistralConfig;
@@ -759,6 +761,7 @@ public class AutoModelForCausaLm {
                 case "GPT2" -> JsonUtils.om.readValue(configFile, Gpt2Config.class);
                 case "MIXTRAL" -> JsonUtils.om.readValue(configFile, MixtralConfig.class);
                 case "GRANITEMOEHYBRID" -> JsonUtils.om.readValue(configFile, GraniteMoeHybridConfig.class);
+                case "GRANITE" -> JsonUtils.om.readValue(configFile, GraniteConfig.class);
                 case "DIFFUSION_GEMMA" -> JsonUtils.om.readValue(configFile, DiffusionGemmaConfig.class);
                 case "NEMOTRON_LABS_DIFFUSION" -> JsonUtils.om.readValue(configFile, NemotronLabsDiffusionConfig.class);
                 default -> throw new IllegalArgumentException(modelType + " not found in AutoModelForCausaLm");
@@ -806,7 +809,10 @@ public class AutoModelForCausaLm {
                 case "GRANITEMOEHYBRID" -> new GraniteMoeHybridModel(inferenceType,
                          config, weightLoader, tokenizer, workingMem, workingQuant, effectiveModelQType, mr,
                          settings, toolCallParser, pool, tensorParallelContext, tensorParallelCollectives,
-                         outputHeadQuantization, lighter);
+                          outputHeadQuantization, lighter);
+                case "GRANITE" -> new GraniteModel(inferenceType, config, weightLoader, tokenizer, workingMem,
+                        workingQuant, effectiveModelQType, mr, settings, toolCallParser, pool, tensorParallelContext,
+                        tensorParallelCollectives, outputHeadQuantization, lighter);
                 case "BERT" -> new io.teknek.reckoning.model.bert.BertModel(inferenceType, config, weightLoader,
                         tokenizer, workingMem, workingQuant, effectiveModelQType, mr, settings,
                         toolCallParser, pool, tensorParallelContext, tensorParallelCollectives, outputHeadQuantization,
