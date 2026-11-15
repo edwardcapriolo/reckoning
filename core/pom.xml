@@ -60,11 +60,8 @@
 
         <dependency>
             <groupId>io.teknek.reckoning</groupId>
-            <artifactId>native</artifactId>
+            <artifactId>native-all</artifactId>
             <version>${project.version}</version>
-            <classifier>${os.detected.name}-${os.detected.arch}</classifier>
-            <optional>true</optional>
-            <scope>test</scope>
         </dependency>
 
         <dependency>

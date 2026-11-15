@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.teknek.reckoning</groupId>
+    <artifactId>reckoning-parent</artifactId>
+    <version>0.0.18-SNAPSHOT</version>
+  </parent>
+  <artifactId>native-all</artifactId>
+  <name>native-all</name>
+
+  <properties>
+    <native.all.input.dir>/tmp/opencode/native-all-inputs</native.all.input.dir>
+    <native.all.work>${project.build.directory}/native-all-work</native.all.work>
+    <native.all.linux.jar>${native.all.input.dir}/container/native-${project.version}-linux-aarch_64.jar</native.all.linux.jar>
+    <native.all.macos.jar>${native.all.input.dir}/cached/native-${project.version}-osx-aarch_64.jar</native.all.macos.jar>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.teknek.reckoning</groupId>
+      <artifactId>tensor</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>assemble-native-all</id>
+            <phase>prepare-package</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <available file="${native.all.linux.jar}" property="native.all.linux.present"/>
+                <fail unless="native.all.linux.present"
+                      message="Missing Linux native input: ${native.all.linux.jar}"/>
+                <available file="${native.all.macos.jar}" property="native.all.macos.present"/>
+                <fail unless="native.all.macos.present"
+                      message="Missing macOS native input: ${native.all.macos.jar}"/>
+                <mkdir dir="${native.all.work}"/>
+                <unzip src="${native.all.linux.jar}" dest="${native.all.work}"/>
+                <mkdir dir="${native.all.work}/META-INF/native/linux-aarch_64"/>
+                <copy todir="${native.all.work}/META-INF/native/linux-aarch_64">
+                  <fileset dir="${native.all.work}/META-INF/native/lib"/>
+                </copy>
+                <mkdir dir="${native.all.work}/native-all-macos-input"/>
+                <unzip src="${native.all.macos.jar}" dest="${native.all.work}/native-all-macos-input"/>
+                <mkdir dir="${native.all.work}/META-INF/native/osx-aarch_64"/>
+                <copy todir="${native.all.work}/META-INF/native/osx-aarch_64">
+                  <fileset dir="${native.all.work}/native-all-macos-input/META-INF/native/lib"/>
+                </copy>
+                <delete dir="${native.all.work}/META-INF/native/lib"/>
+                <delete dir="${native.all.work}/native-all-macos-input"/>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <configuration>
+          <classesDirectory>${native.all.work}</classesDirectory>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

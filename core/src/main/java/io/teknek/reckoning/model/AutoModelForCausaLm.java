@@ -49,6 +49,7 @@ import io.teknek.reckoning.safetensors.WeightLoader;
 import io.teknek.reckoning.safetensors.fetch.LoraAdapterModelFetcher;
 import io.teknek.reckoning.safetensors.fetch.ModelFetcher;
 import io.teknek.reckoning.tensor.KvBufferCacheSettings;
+import io.teknek.reckoning.tensor.operations.util.NativeLibraryManager;
 import io.teknek.reckoning.tensor2.TensorOps;
 import io.teknek.reckoning.tensor2.Lighter;
 import io.teknek.reckoning.toolcallparser.DefaultToolCallParser;
@@ -76,6 +77,10 @@ import java.util.function.Function;
 
 public class AutoModelForCausaLm {
     private static final Logger LOGGER = LoggerFactory.getLogger(AutoModelForCausaLm.class);
+
+    public static void specialNativeLoaderEnabled(boolean enabled) {
+        NativeLibraryManager.specialNativeLoaderEnabled(enabled);
+    }
     public static void applyTuning(ModelFetcher fetcher, Builder b){
         if (fetcher.getName().startsWith("Llama")){
             b.withToolCallParser(new LlamaToolCallParser());
@@ -569,6 +574,7 @@ public class AutoModelForCausaLm {
         }
 
         protected AbstractModel loadLocalTransformerModel(){
+            NativeLibraryManager.initialize();
             validatePrefixCacheSettingsForModel();
             System.setProperty("jdk.incubator.vector.VECTOR_ACCESS_OOB_CHECK", this.oobCheck);
             if (pool == null){

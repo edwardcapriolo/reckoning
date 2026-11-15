@@ -234,6 +234,12 @@
     </distributionManagement>
     <profiles>
         <profile>
+            <id>native-all</id>
+            <modules>
+                <module>native-all</module>
+            </modules>
+        </profile>
+        <profile>
             <id>release-central</id>
             <build>
                 <plugins>
