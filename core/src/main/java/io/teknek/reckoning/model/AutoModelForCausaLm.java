@@ -49,9 +49,6 @@ import io.teknek.reckoning.safetensors.WeightLoader;
 import io.teknek.reckoning.safetensors.fetch.LoraAdapterModelFetcher;
 import io.teknek.reckoning.safetensors.fetch.ModelFetcher;
 import io.teknek.reckoning.tensor.KvBufferCacheSettings;
-import io.teknek.reckoning.tensorlib.TensorRuntime;
-import io.teknek.reckoning.tensorlib.TensorRuntimeMode;
-import io.teknek.reckoning.tensorlib.TensorRuntimeNative;
 import io.teknek.reckoning.tensor2.TensorOps;
 import io.teknek.reckoning.tensor2.Lighter;
 import io.teknek.reckoning.toolcallparser.DefaultToolCallParser;
@@ -141,7 +138,6 @@ public class AutoModelForCausaLm {
         private boolean trackKvReadViews;
         private boolean tensorPlanTrace;
         private Map<String, Object> generationOptions = Map.of();
-        private Optional<TensorRuntimeMode> tensorRuntimeMode = Optional.empty();
         private final EnumMap<TensorProviderKind, Integer> parallelSplitSizeFixed = new EnumMap<>(TensorProviderKind.class);
         private final EnumMap<TensorProviderKind, Double> parallelSplitSizeMultiplier = new EnumMap<>(TensorProviderKind.class);
         private Optional<Integer> groupedDecodeQkvSplitSize = Optional.empty();
@@ -365,11 +361,6 @@ public class AutoModelForCausaLm {
             return this;
         }
 
-        public Builder withTensorRuntimeMode(TensorRuntimeMode tensorRuntimeMode) {
-            this.tensorRuntimeMode = Optional.of(Objects.requireNonNull(tensorRuntimeMode, "tensorRuntimeMode"));
-            return this;
-        }
-
         public Builder withGroupedDecodeQkvSplitSize(int groupedDecodeQkvSplitSize) {
             if (groupedDecodeQkvSplitSize < 1) {
                 throw new IllegalArgumentException("groupedDecodeQkvSplitSize must be >= 1");
@@ -442,7 +433,6 @@ public class AutoModelForCausaLm {
             config.packedPrefill().ifPresent(this::withPackedPrefill);
             config.download().ifPresent(this::withDownload);
             config.maxPrefillBatchSize().or(config::maxBatchSize).ifPresent(this::withMaxPrefillBatchSize);
-            config.tensorRuntimeMode().ifPresent(this::withTensorRuntimeMode);
             config.parallelSplitSizeFixed().ifPresent(map -> map.forEach(this::withParallelSplitSizeFixed));
             config.parallelSplitSizeMultiplier().ifPresent(map -> map.forEach(this::withParallelSplitSizeMultiplier));
             config.groupedDecodeQkvSplitSize().ifPresent(this::withGroupedDecodeQkvSplitSize);
@@ -607,8 +597,6 @@ public class AutoModelForCausaLm {
             model.setTrackKvReadViewsEnabled(trackKvReadViews);
             model.setGenerationOptions(generationOptions);
             model.setGroupedDecodeQkvSplitSize(groupedDecodeQkvSplitSize);
-            model.setTensorRuntimeMode(tensorRuntimeMode);
-            model.setTensorRuntime(createTensorRuntime());
             model.setTensorPlanTraceEnabled(tensorPlanTrace);
             installNativeTensor2Ops(model);
             logBuilderState(model);
@@ -671,7 +659,7 @@ public class AutoModelForCausaLm {
                       registeredProviders=[{}]
                       parallelSplitPolicy=availableProcessors={} defaultMultipliers=disabled simdAlignment={} panamaAlignment={} fixedOverrides={} multiplierOverrides={}
                       modelType={} workingMemoryType={} quantizedMemoryType={}
-                      tensorRuntimeMode={} groupedDecodeQkvSplitSize={} gpuProvider={} gpuPrefill={} gpuDecode={} gpuDecodeAttention={} gpuDiffusionBlockProjection={} packedBlockAttention={} packedPrefill={} trackKvReadViews={} maxPrefillBatchSize={}
+                      groupedDecodeQkvSplitSize={} gpuProvider={} gpuPrefill={} gpuDecode={} gpuDecodeAttention={} gpuDiffusionBlockProjection={} packedBlockAttention={} packedPrefill={} trackKvReadViews={} maxPrefillBatchSize={}
                       prefixCacheMode={} kvBlockStoragePolicy={} kvTurboQuantBits={} kvKeyDType={} kvValueDType={} sharedPrefixBlockCacheMaxBytes={} sharedPrefixDiskCacheEnabled={} sharedPrefixDiskCacheMaxBytes={}
                       generationOptions={}
                     """,
@@ -679,26 +667,13 @@ public class AutoModelForCausaLm {
                     Runtime.getRuntime().availableProcessors(), SIMD_PARALLEL_SPLIT_ALIGNMENT,
                     PANAMA_PARALLEL_SPLIT_ALIGNMENT, parallelSplitSizeFixed, parallelSplitSizeMultiplier,
                     model.modelDType, model.workingDType, model.workingQType,
-                    tensorRuntimeMode.orElse(TensorRuntimeMode.DISABLED), groupedDecodeQkvSplitSize.orElse(null),
+                     groupedDecodeQkvSplitSize.orElse(null),
                     gpuProvider, gpuPrefill, gpuDecode, gpuDecodeAttention, gpuDiffusionBlockProjection, packedBlockAttention, packedPrefill,
                     trackKvReadViews, maxPrefillBatchSize,
                     settings.getPrefixCacheMode(), settings.getKvBlockStoragePolicy(), settings.getKvTurboQuantBits(),
                     settings.getKvKeyDType(), settings.getKvValueDType(), settings.getSharedPrefixBlockCacheMaxBytes(),
                     settings.isSharedPrefixDiskCacheEnabled(), settings.getSharedPrefixDiskCacheMaxBytes(),
                     generationOptions);
-        }
-
-        private TensorRuntime createTensorRuntime() {
-            TensorRuntimeMode mode = tensorRuntimeMode.orElse(TensorRuntimeMode.DISABLED);
-            if (mode == TensorRuntimeMode.DISABLED) {
-                return null;
-            }
-            int workers = pool == null ? Math.max(1, Runtime.getRuntime().availableProcessors() / 2) : pool.getCoreCount();
-            return new TensorRuntime(Math.max(1, workers), mode, nativeTensorRuntime(), mr);
-        }
-
-        private TensorRuntimeNative nativeTensorRuntime() {
-            return TensorRuntimeNative.unavailable("native locality runtime is not enabled");
         }
 
         private void validatePrefixCacheSettingsForModel() {

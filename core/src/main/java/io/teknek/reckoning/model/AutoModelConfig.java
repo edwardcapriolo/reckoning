@@ -3,7 +3,6 @@ package io.teknek.reckoning.model;
 import io.teknek.reckoning.DType;
 import io.teknek.reckoning.JsonUtils;
 import io.teknek.reckoning.tensor.KvBufferCacheSettings;
-import io.teknek.reckoning.tensorlib.TensorRuntimeMode;
 
 import java.io.File;
 import java.io.IOException;
@@ -31,7 +30,6 @@ public record AutoModelConfig(
         Optional<Boolean> download,
         Optional<Integer> maxPrefillBatchSize,
         Optional<Integer> maxBatchSize,
-        Optional<TensorRuntimeMode> tensorRuntimeMode,
         Optional<Map<TensorProviderKind, Integer>> parallelSplitSizeFixed,
         Optional<Map<TensorProviderKind, Double>> parallelSplitSizeMultiplier,
         Optional<Integer> groupedDecodeQkvSplitSize,
@@ -53,7 +51,6 @@ public record AutoModelConfig(
         download = download == null ? Optional.empty() : download;
         maxPrefillBatchSize = maxPrefillBatchSize == null ? Optional.empty() : maxPrefillBatchSize;
         maxBatchSize = maxBatchSize == null ? Optional.empty() : maxBatchSize;
-        tensorRuntimeMode = tensorRuntimeMode == null ? Optional.empty() : tensorRuntimeMode;
         parallelSplitSizeFixed = parallelSplitSizeFixed == null ? Optional.empty() : parallelSplitSizeFixed;
         parallelSplitSizeMultiplier = parallelSplitSizeMultiplier == null ? Optional.empty() : parallelSplitSizeMultiplier;
         groupedDecodeQkvSplitSize = groupedDecodeQkvSplitSize == null ? Optional.empty() : groupedDecodeQkvSplitSize;
