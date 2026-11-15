@@ -698,14 +698,7 @@ public class AutoModelForCausaLm {
         }
 
         private TensorRuntimeNative nativeTensorRuntime() {
-            try {
-                return (TensorRuntimeNative) Class.forName(
-                        "io.teknek.reckoning.tensor.operations.runtime.NativeTensorRuntime")
-                        .getConstructor()
-                        .newInstance();
-            } catch (ReflectiveOperationException | LinkageError e) {
-                return TensorRuntimeNative.unavailable("native runtime not available: " + e.getMessage());
-            }
+            return TensorRuntimeNative.unavailable("native locality runtime is not enabled");
         }
 
         private void validatePrefixCacheSettingsForModel() {
