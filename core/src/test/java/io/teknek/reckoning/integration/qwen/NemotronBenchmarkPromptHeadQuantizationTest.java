@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Tag("large-model")
 class NemotronBenchmarkPromptHeadQuantizationTest {
-    private static final String OWNER = "nvidia";
+    private static final String OWNER = "edwardcapiolo";
     private static final String MODEL = "Nemotron-Labs-Diffusion-3B-Base-JQ4";
     private static final String MATH_PROMPT = "Solve step by step. A bus starts with an unknown number of passengers. "
             + "At the first stop, half get off and 4 get on. At the second stop, 6 get off and 8 get on. "
@@ -30,11 +30,11 @@ class NemotronBenchmarkPromptHeadQuantizationTest {
     @Test
     void arBenchmarkMathPromptWithDenseHeadDoesNotImmediatelyStop() {
         ModelFetcher fetch = new ModelFetcher(OWNER, MODEL).withDownload(false);
-        Assumptions.assumeTrue(fetch.pathForModel().toFile().isDirectory(),
-                MODEL + " cache is not present: " + fetch.pathForModel());
+        //Assumptions.assumeTrue(fetch.pathForModel().toFile().isDirectory(),
+        //        MODEL + " cache is not present: " + fetch.pathForModel());
 
         try (AbstractModel model = AutoModelForCausaLm.newBuilder(fetch)
-                .withDownload(false)
+                .withDownload(true)
                 .withGenerationOptions(Map.of("mode", "ar"))
                 .buildLocalTransformerModel()) {
             PromptContext prompt = benchmarkPrompt(model.promptSupport(), MATH_PROMPT);

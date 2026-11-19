@@ -346,6 +346,78 @@ public final class CompositeOps {
         rotaryEmbedding(target, heads, headSize, startPosition, frequencies);
     }
 
+  /**
+   * Applies optimized RoPE using vectorized operations for better performance.
+   * This is a more efficient implementation that leverages SIMD operations.
+   */
+  public void optimizedRotaryEmbedding(TensorRef query, TensorRef key, int heads, int headSize, 
+                                     int startPosition, float[] inverseFrequencies) {
+    // Use vectorized approach for better performance
+    if (query != null) {
+      // Apply RoPE to query tensor using vectorized operations
+      applyRotaryEmbeddingVectorized(query, heads, headSize, startPosition, inverseFrequencies);
+    }
+    if (key != null) {
+      // Apply RoPE to key tensor using vectorized operations  
+      applyRotaryEmbeddingVectorized(key, heads, headSize, startPosition, inverseFrequencies);
+    }
+  }
+
+  private void applyRotaryEmbeddingVectorized(TensorRef target, int heads, int headSize, 
+                                            int startPosition, float[] inverseFrequencies) {
+    // Vectorized RoPE implementation for better performance
+    int halfHead = headSize / 2;
+    int batchSize = target.shape().first();
+    
+    // Process in chunks using vector operations to improve efficiency
+    int upper = F32_SPECIES.loopBound(halfHead);
+    
+    for (int row = 0; row < batchSize; row++) {
+      for (int head = 0; head < heads; head++) {
+        int offset = head * headSize;
+        
+        // Vectorized RoPE computation
+        for (int dimension = 0; dimension < upper; dimension += F32_SPECIES.length()) {
+          // Load input values using vector operations
+          long inputAddress = target.memorySegmentOffset(target.shape().getOffset(row, offset + dimension));
+          
+          FloatVector x0 = FloatVector.fromMemorySegment(F32_SPECIES, 
+              target.memorySegment(), inputAddress, ByteOrder.LITTLE_ENDIAN);
+          FloatVector x1 = FloatVector.fromMemorySegment(F32_SPECIES, 
+              target.memorySegment(), inputAddress + halfHead * Float.BYTES, ByteOrder.LITTLE_ENDIAN);
+          
+          // Load frequency values
+          float cosine = inverseFrequencies[dimension];
+          float sine = inverseFrequencies[dimension + halfHead];
+          
+          FloatVector cosVec = FloatVector.broadcast(F32_SPECIES, cosine);
+          FloatVector sinVec = FloatVector.broadcast(F32_SPECIES, sine);
+          
+          // Compute RoPE: [x0*cos - x1*sin, x0*sin + x1*cos]
+          FloatVector result0 = x0.mul(cosVec).sub(x1.mul(sinVec));
+          FloatVector result1 = x0.mul(sinVec).add(x1.mul(cosVec));
+          
+          // Store results back
+          result0.intoMemorySegment(target.memorySegment(), inputAddress, ByteOrder.LITTLE_ENDIAN);
+          result1.intoMemorySegment(target.memorySegment(), inputAddress + halfHead * Float.BYTES, 
+              ByteOrder.LITTLE_ENDIAN);
+        }
+        
+        // Handle remaining elements that don't fit in vector operations
+        for (int dimension = upper; dimension < halfHead; dimension++) {
+          float x0 = target.get(row, offset + dimension);
+          float x1 = target.get(row, offset + dimension + halfHead);
+          
+          float cosine = inverseFrequencies[dimension];
+          float sine = inverseFrequencies[dimension + halfHead];
+          
+          target.set((float)(x0 * cosine - x1 * sine), row, offset + dimension);
+          target.set((float)(x0 * sine + x1 * cosine), row, offset + dimension + halfHead);
+        }
+      }
+    }
+  }
+
     /** Applies F32 RMSNorm using vectorized row reductions and optional scaling. */
     public void rmsNorm(TensorRef output, TensorRef input, TensorRef weights, float epsilon,
             float weightAdjustment) {
