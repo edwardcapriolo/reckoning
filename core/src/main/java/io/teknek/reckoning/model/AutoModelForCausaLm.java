@@ -429,6 +429,7 @@ public class AutoModelForCausaLm {
             config.workingMemoryType().ifPresent(this::withWorkingMemoryType);
             config.workingQuantType().ifPresent(this::withWorkingQuantType);
             config.outputHeadQuantization().ifPresent(this::withOutputHeadQuantization);
+            config.toolCallParser().ifPresent(parser -> withToolCallParser(loadToolCallParser(parser)));
             config.gpuPrefill().ifPresent(this::withGpuPrefill);
             config.gpuDecode().ifPresent(this::withGpuDecode);
             config.gpuDecodeAttention().ifPresent(this::withGpuDecodeAttention);
@@ -445,6 +446,18 @@ public class AutoModelForCausaLm {
             config.kvBufferCache().map(AutoModelConfig.KvBufferCache::toSettings).ifPresent(this::withKvBufferCacheSettings);
             config.quantizeOnDemand().ifPresent(q -> withQuantizeOnDemand(q.targetType(), q.outputOwner(), q.outputModel()));
             return this;
+        }
+
+        private static ToolCallParser loadToolCallParser(String className) {
+            try {
+                Class<?> parserClass = Class.forName(className);
+                if (!ToolCallParser.class.isAssignableFrom(parserClass)) {
+                    throw new IllegalArgumentException(className + " does not implement ToolCallParser");
+                }
+                return (ToolCallParser) parserClass.getDeclaredConstructor().newInstance();
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalArgumentException("Unable to instantiate tool call parser " + className, e);
+            }
         }
         public GossipParallelMembership startParallelMembership() {
             return GossipParallelMembership.start(parallelSettings.orElseThrow(() ->

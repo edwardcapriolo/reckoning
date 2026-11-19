@@ -14,8 +14,7 @@
 
   <properties>
     <native.all.host.classifier>${os.detected.name}-${os.detected.arch}</native.all.host.classifier>
-    <native.all.host.work>${project.build.directory}/native-all-host</native.all.host.work>
-    <native.all.work>${project.build.directory}/native-all-work</native.all.work>
+    <native.all.work>${project.build.outputDirectory}</native.all.work>
   </properties>
 
   <dependencies>
@@ -28,7 +27,6 @@
       <groupId>io.teknek.reckoning</groupId>
       <artifactId>native</artifactId>
       <version>${project.version}</version>
-      <classifier>${native.all.host.classifier}</classifier>
       <scope>provided</scope>
     </dependency>
   </dependencies>
@@ -37,46 +35,22 @@
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-dependency-plugin</artifactId>
-        <version>3.8.1</version>
-        <executions>
-          <execution>
-            <id>unpack-host-native</id>
-            <phase>prepare-package</phase>
-            <goals><goal>unpack</goal></goals>
-            <configuration>
-              <artifactItems>
-                <artifactItem>
-                  <groupId>io.teknek.reckoning</groupId>
-                  <artifactId>native</artifactId>
-                  <version>${project.version}</version>
-                  <classifier>${native.all.host.classifier}</classifier>
-                  <type>jar</type>
-                  <outputDirectory>${native.all.host.work}</outputDirectory>
-                </artifactItem>
-              </artifactItems>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-antrun-plugin</artifactId>
         <version>3.1.0</version>
         <executions>
           <execution>
             <id>assemble-native-all</id>
-            <phase>prepare-package</phase>
+            <phase>process-resources</phase>
             <goals><goal>run</goal></goals>
             <configuration>
               <target>
                 <mkdir dir="${native.all.work}"/>
+                <copy todir="${native.all.work}" overwrite="false">
+                  <fileset dir="${project.basedir}/../native/target/classes"/>
+                </copy>
                 <mkdir dir="${native.all.work}/META-INF/native/${native.all.host.classifier}"/>
                 <copy todir="${native.all.work}/META-INF/native/${native.all.host.classifier}">
-                  <fileset dir="${native.all.host.work}/META-INF/native/lib"/>
-                </copy>
-                <copy todir="${native.all.work}" overwrite="false">
-                  <fileset dir="${native.all.host.work}" excludes="META-INF/native/lib/**"/>
+                  <fileset dir="${project.basedir}/../native/target/native-lib-only/${native.all.host.classifier}"/>
                 </copy>
               </target>
             </configuration>

@@ -21,6 +21,7 @@ public record AutoModelConfig(
         Optional<DType> workingMemoryType,
         Optional<DType> workingQuantType,
         Optional<DType> outputHeadQuantization,
+        Optional<String> toolCallParser,
         Optional<Boolean> gpuPrefill,
         Optional<Boolean> gpuDecode,
         Optional<Boolean> gpuDecodeAttention,
@@ -42,6 +43,7 @@ public record AutoModelConfig(
         workingMemoryType = workingMemoryType == null ? Optional.empty() : workingMemoryType;
         workingQuantType = workingQuantType == null ? Optional.empty() : workingQuantType;
         outputHeadQuantization = outputHeadQuantization == null ? Optional.empty() : outputHeadQuantization;
+        toolCallParser = toolCallParser == null ? Optional.empty() : toolCallParser;
         gpuPrefill = gpuPrefill == null ? Optional.empty() : gpuPrefill;
         gpuDecode = gpuDecode == null ? Optional.empty() : gpuDecode;
         gpuDecodeAttention = gpuDecodeAttention == null ? Optional.empty() : gpuDecodeAttention;
