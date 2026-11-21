@@ -26,4 +26,15 @@ public final class VectorTensorMathUtilsOptimized {
         }
         return result;
     }
+
+    public static TensorRef precomputeInverseFrequencies(int dim, double theta, double scalingFactor,
+            Lighter lighter) {
+        int halfDim = dim / 2;
+        TensorRef result = lighter.allocate(DType.F32, TensorShape.of(1, halfDim));
+        for (int frequency = 0; frequency < halfDim; frequency++) {
+            double value = (1.0 / FastMath.pow(theta, (2.0 * frequency) / dim)) / scalingFactor;
+            result.set((float) value, 0, frequency);
+        }
+        return result;
+    }
 }

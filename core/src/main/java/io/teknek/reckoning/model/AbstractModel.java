@@ -211,6 +211,8 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
     protected final Lighter lighter;
     protected final CompositeOps compositeOps;
     protected TensorRef ropeFrequencies;
+    protected TensorRef ropeInverseFrequencies;
+    private RopeStorageMode ropeStorageMode = RopeStorageMode.FULL_TABLE;
     protected final MetricRegistry metricRegistry;
     private final KvBufferCacheSettings kvBufferCacheSettings;
     protected final TensorParallelContext tensorParallelContext;
@@ -313,9 +315,15 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
         }
         this.modelLineagePlan = new TensorPlan(pool, metricRegistry, this, lighter);
         if (config.ropeFreqsTheta != null) {
-            ropeFrequencies = registerModelTensorRef(VectorTensorMathUtilsOptimized.precomputeFreqsCis(
-                    config.headSize, config.contextLength, config.ropeFreqsTheta,
-                    config.ropeScalingFactor, lighter));
+            if (ropeStorageMode == RopeStorageMode.ON_DEMAND) {
+                ropeInverseFrequencies = registerModelTensorRef(VectorTensorMathUtilsOptimized
+                        .precomputeInverseFrequencies(config.headSize, config.ropeFreqsTheta,
+                                config.ropeScalingFactor, lighter));
+            } else {
+                ropeFrequencies = registerModelTensorRef(VectorTensorMathUtilsOptimized.precomputeFreqsCis(
+                        config.headSize, config.contextLength, config.ropeFreqsTheta,
+                        config.ropeScalingFactor, lighter));
+            }
         }
         logger.debug("model init start config={} inference_type={}", config.getClass().getSimpleName(), inferenceType);
         this.embedInput = inferenceType.isInput ? loadInputWeights() : null;
@@ -1414,8 +1422,34 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
         return compositeOps;
     }
 
+    public void applyRotaryEmbedding(TensorRef target, int heads, int headSize, int startPosition) {
+        if (ropeStorageMode == RopeStorageMode.ON_DEMAND) {
+            if (ropeInverseFrequencies == null) {
+                throw new IllegalStateException("Model does not provide inverse RoPE frequencies");
+            }
+            compositeOps.rotaryEmbeddingOnDemand(target, heads, headSize, startPosition,
+                    ropeInverseFrequencies);
+            return;
+        }
+        if (ropeFrequencies == null) {
+            throw new IllegalStateException("Model does not provide RoPE frequencies");
+        }
+        compositeOps.rotaryEmbedding(target, heads, headSize, startPosition, ropeFrequencies);
+    }
+
     public TensorRef getRopeFrequencies() {
         return ropeFrequencies;
+    }
+
+    public TensorRef getRopeInverseFrequencies() {
+        return ropeInverseFrequencies;
+    }
+
+    public void setRopeStorageMode(RopeStorageMode ropeStorageMode) {
+        if (initialized) {
+            throw new IllegalStateException("Rope storage mode must be set before model initialization");
+        }
+        this.ropeStorageMode = Objects.requireNonNull(ropeStorageMode, "ropeStorageMode");
     }
 
     /**
