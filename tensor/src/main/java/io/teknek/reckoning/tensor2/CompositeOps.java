@@ -358,6 +358,39 @@ public final class CompositeOps {
         }
     }
 
+    /** Applies RoPE by computing cosine/sine values from compact inverse frequencies on demand. */
+    public void rotaryEmbeddingOnDemand(TensorRef target, int heads, int headSize, int startPosition,
+            TensorRef inverseFrequencies) {
+        Preconditions.checkArgument(target != null && inverseFrequencies != null,
+                "RoPE tensors must be set");
+        Preconditions.checkArgument(target.dims() == 2 && inverseFrequencies.dims() == 2,
+                "RoPE tensors must be 2D");
+        Preconditions.checkArgument(heads >= 0 && headSize > 0 && (headSize & 1) == 0,
+                "RoPE head shape is invalid");
+        Preconditions.checkArgument(startPosition >= 0, "RoPE start position must be non-negative");
+        int headPiece = headSize / 2;
+        int batchSize = target.shape().first();
+        Preconditions.checkArgument(target.shape().last() >= heads * headSize,
+                "RoPE target does not contain all heads");
+        Preconditions.checkArgument(inverseFrequencies.shape().last() >= headPiece,
+                "RoPE inverse frequencies do not cover the head");
+        for (int row = 0; row < batchSize; row++) {
+            int position = startPosition + row;
+            for (int head = 0; head < heads; head++) {
+                int offset = head * headSize;
+                for (int dimension = 0; dimension < headPiece; dimension++) {
+                    float x0 = target.get(row, offset + dimension);
+                    float x1 = target.get(row, offset + dimension + headPiece);
+                    double angle = position * (double) inverseFrequencies.get(0, dimension);
+                    float cosine = (float) FastMath.cos(angle);
+                    float sine = (float) FastMath.sin(angle);
+                    target.set(x0 * cosine - x1 * sine, row, offset + dimension);
+                    target.set(x0 * sine + x1 * cosine, row, offset + dimension + headPiece);
+                }
+            }
+        }
+    }
+
     /** Applies RoPE from compact inverse frequencies without materializing a position-by-dimension table. */
     public void rotaryEmbedding(TensorRef target, int heads, int headSize, int startPosition,
             float[] inverseFrequencies) {
