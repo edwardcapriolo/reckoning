@@ -55,8 +55,10 @@ public final class Qwen3KvCacheSelfAttention2 extends KvCacheSelfAttention2 {
     protected void applyRotaryEmbedding(TensorRef query, TensorRef key, int startPosition) {
         try (Timer.Context ignored = InferenceProfiler.timer(model.getMetricRegistry(),
                 "kvcacheselfattention2.rope").time()) {
-            float[][] frequencies = config.ropeFreqs.orElseThrow(
-                    () -> new IllegalStateException("Qwen3 configuration does not provide RoPE frequencies"));
+            TensorRef frequencies = model.getRopeFrequencies();
+            if (frequencies == null) {
+                throw new IllegalStateException("Qwen3 model does not provide RoPE frequencies");
+            }
             compositeOps.rotaryEmbedding(query, localNumberOfHeads, headDimension, startPosition, frequencies);
             compositeOps.rotaryEmbedding(key, localNumberOfKeyValueHeads, headDimension, startPosition, frequencies);
         }
