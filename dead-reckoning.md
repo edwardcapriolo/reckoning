@@ -30,6 +30,10 @@ The runtime writes newline-delimited JSON records. Tensor checkpoints can captur
 - SHA-256 hash of the captured tensor values.
 - A bounded sample of the first values.
 
+Generation traces also include a non-semantic `TIMING` record with prompt time,
+time to first token, generation time, average token time, total time, and token
+counts. Semantic trace comparisons intentionally ignore timing records.
+
 The current model smoke test is `DeadReckoningModelsIT`. It runs eight six-token traces:
 
 - Qwen3 0.6B dense and JQ4.

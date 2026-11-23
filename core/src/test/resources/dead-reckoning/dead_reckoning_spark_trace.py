@@ -15,6 +15,7 @@ import hashlib
 import inspect
 import json
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -170,6 +171,7 @@ def install_spark_transformers_compatibility() -> None:
 
 def main() -> None:
     args = parse_args()
+    total_start_ns = time.perf_counter_ns()
     model_dir = args.model.expanduser().resolve()
     if not model_dir.is_dir():
         raise SystemExit(f"model directory does not exist: {model_dir}")
@@ -191,6 +193,7 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
+    load_start_ns = time.perf_counter_ns()
     tokenizer = AutoTokenizer.from_pretrained(
         str(model_dir), trust_remote_code=True, local_files_only=True
     )
@@ -200,11 +203,22 @@ def main() -> None:
         trust_remote_code=True,
         local_files_only=True,
     ).to(args.device).eval()
+    model_load_ms = (time.perf_counter_ns() - load_start_ns) / 1_000_000.0
+    prompt_start_ns = time.perf_counter_ns()
     encoded, rendered_prompt = render_inputs(tokenizer, args)
     encoded = {key: value.to(args.device) for key, value in encoded.items()}
+    prompt_ms = (time.perf_counter_ns() - prompt_start_ns) / 1_000_000.0
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    state = {"forward": -1, "phase": "PREFILL", "position": -1}
+    state = {
+        "forward": -1,
+        "phase": "PREFILL",
+        "position": -1,
+        "forward_start_ns": None,
+        "prefill_ms": None,
+        "decode_ms": 0.0,
+        "decode_forwards": 0,
+    }
     records = [{
         "kind": "RUN_START",
         "model": str(model_dir),
@@ -227,6 +241,14 @@ def main() -> None:
     }]
 
     def before_model(_module, _inputs):
+        now_ns = time.perf_counter_ns()
+        if state["forward_start_ns"] is not None:
+            elapsed_ms = (now_ns - state["forward_start_ns"]) / 1_000_000.0
+            if state["phase"] == "PREFILL":
+                state["prefill_ms"] = elapsed_ms
+            else:
+                state["decode_ms"] += elapsed_ms
+                state["decode_forwards"] += 1
         state["forward"] += 1
         state["phase"] = "PREFILL" if state["forward"] == 0 else "DECODE"
         state["position"] = (
@@ -234,8 +256,21 @@ def main() -> None:
             if state["forward"] == 0
             else encoded["input_ids"].shape[-1] + state["forward"] - 1
         )
+        state["forward_start_ns"] = now_ns
+
+    def after_model(_module, _inputs, _output):
+        if state["forward_start_ns"] is None:
+            return
+        elapsed_ms = (time.perf_counter_ns() - state["forward_start_ns"]) / 1_000_000.0
+        if state["phase"] == "PREFILL":
+            state["prefill_ms"] = elapsed_ms
+        else:
+            state["decode_ms"] += elapsed_ms
+            state["decode_forwards"] += 1
+        state["forward_start_ns"] = None
 
     hooks = [model.register_forward_pre_hook(before_model)]
+    hooks.append(model.register_forward_hook(after_model))
 
     def hook(name):
         def capture(_module, _inputs, output):
@@ -269,19 +304,33 @@ def main() -> None:
             handle.remove()
 
     generated_tokens = generated[0, encoded["input_ids"].shape[-1]:].tolist()
-    records.append({
+    response_record = {
         "kind": "RESPONSE_END",
         "text": tokenizer.decode(generated_tokens, skip_special_tokens=False),
         "generated_tokens": generated_tokens,
         "finish_reason": "MAX_TOKENS",
+    }
+    records.append(response_record)
+    total_ms = (time.perf_counter_ns() - total_start_ns) / 1_000_000.0
+    records.append({
+        "kind": "TIMING",
+        "model_load_ms": model_load_ms,
+        "prompt_ms": prompt_ms,
+        "prefill_ms": state["prefill_ms"],
+        "decode_ms": state["decode_ms"],
+        "decode_forwards": state["decode_forwards"],
+        "total_ms": total_ms,
+        "prompt_tokens": int(encoded["input_ids"].shape[-1]),
+        "generated_tokens": len(generated_tokens),
     })
     with args.output.open("w", encoding="utf-8") as stream:
         for record in records:
             stream.write(json.dumps(record, allow_nan=True) + "\n")
 
     print(f"HF_DEAD_RECKONING_TRACE={args.output.resolve()}")
-    print(f"HF_DEAD_RECKONING_RESPONSE={records[-1]['text']!r}")
+    print(f"HF_DEAD_RECKONING_RESPONSE={response_record['text']!r}")
     print(f"HF_DEAD_RECKONING_TOKENS={generated_tokens}")
+    print(f"HF_DEAD_RECKONING_TIMING_MS={records[-1]}")
 
 
 if __name__ == "__main__":

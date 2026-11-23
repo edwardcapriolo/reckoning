@@ -387,4 +387,9 @@ public class Config {
     public List<String> getArchitectures() {
         return architectures;
     }
+
+    /** Whether the input embedding matrix is also the causal-LM output projection. */
+    public boolean tieWordEmbeddings() {
+        return false;
+    }
 }

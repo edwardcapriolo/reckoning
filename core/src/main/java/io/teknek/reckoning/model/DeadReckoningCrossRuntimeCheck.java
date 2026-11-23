@@ -64,7 +64,7 @@ public final class DeadReckoningCrossRuntimeCheck {
         }
 
         public static Policy causalDefaults() {
-            Threshold normal = new Threshold(1.0e-3, 1.0e-3, 0.25, 0.05);
+            Threshold normal = normalThreshold();
             return new Policy(normal, Map.of(), List.of(
                     new StageMapping(Pattern.compile("model\\.embed_tokens"), "layer.-1.input"),
                     new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)\\.input_layernorm"),
@@ -85,6 +85,25 @@ public final class DeadReckoningCrossRuntimeCheck {
                             "layer.$1.post_attention_norm"),
                     new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)"),
                             "layer.$1.layer_output")));
+        }
+
+        public static Policy sparkDefaults() {
+            return new Policy(normalThreshold(), Map.of(), List.of(
+                    new StageMapping(Pattern.compile("model\\.embedding"), "layer.-1.input"),
+                    new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)\\.post_attention_layernorm"),
+                            "layer.$1.pre_ff_norm"),
+                    new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)\\.self_attn\\.q_k_v_proj"),
+                            "layer.$1.q_k_v_proj"),
+                    new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)\\.self_attn\\.g_proj"),
+                            "layer.$1.g_proj"),
+                    new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)\\.self_attn(?:\\.out_proj)?"),
+                            "layer.$1.attention_output"),
+                    new StageMapping(Pattern.compile("model\\.layers\\.(\\d+)$"),
+                            "layer.$1.layer_output")));
+        }
+
+        private static Threshold normalThreshold() {
+            return new Threshold(1.0e-3, 1.0e-3, 0.25, 0.05);
         }
 
         private Threshold threshold(String name) {

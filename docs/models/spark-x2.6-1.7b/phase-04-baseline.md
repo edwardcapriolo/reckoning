@@ -12,7 +12,9 @@ The Python source reference runner is:
 core/src/test/resources/dead-reckoning/dead_reckoning_spark_trace.py
 ```
 
-It is self-contained and does not import the untracked scripts in the separate Transformers checkout. It loads the local model with `trust_remote_code=True` and `local_files_only=True`, applies Spark's chat template, uses deterministic generation (`do_sample=False`, temperature `0`, fixed seed), captures module checkpoints, and emits the shared JSONL `RUN_START`, `CHECKPOINT`, and `RESPONSE_END` record types.
+It is self-contained and does not import the untracked scripts in the separate Transformers checkout. It loads the local model with `trust_remote_code=True` and `local_files_only=True`, applies Spark's chat template, uses deterministic generation (`do_sample=False`, temperature `0`, fixed seed), captures module checkpoints, and emits the shared JSONL `RUN_START`, `CHECKPOINT`, `RESPONSE_END`, and non-semantic `TIMING` record types.
+
+`TIMING` records contain model-load, prompt preparation, prefill, decode, total, prompt-token, and generated-token measurements. They are diagnostic records and are not part of tensor or response equivalence checks.
 
 The model declares Transformers `4.57.1` as its source version. The runner rejects other versions by default. An explicit `--allow-compatibility-shims` option exists for exploratory diagnosis only; it translates known API differences in memory and its output must not be used as a source baseline.
 

@@ -544,6 +544,20 @@ public class Lighter {
         throw new IllegalStateException("No tensor operations support exp");
     }
 
+    public void sigmoid(Sigmoid sigmoid) {
+        for (TensorOps ops : tensorOperations.values()) {
+            if (ops.sigmoid(sigmoid.target()).isRight()) return;
+        }
+        throw new IllegalStateException("No tensor operations support sigmoid");
+    }
+
+    public void headwiseMultiply(HeadwiseMultiply operation) {
+        for (TensorOps ops : tensorOperations.values()) {
+            if (ops.headwiseMultiply(operation).isRight()) return;
+        }
+        throw new IllegalStateException("No tensor operations support headwise multiply");
+    }
+
     public void sum(Sum sum) {
         TensorRef input = sum.getSource();
         TensorRef output = sum.getDestination();
@@ -836,6 +850,7 @@ public class Lighter {
         }
         return false;
     }
+
 
     public void saxpy(float alpha, TensorRef x, TensorRef y, int xOffset, int yOffset, int length) {
         Preconditions.checkArgument(x != null && y != null, "SAXPY tensors must be set");

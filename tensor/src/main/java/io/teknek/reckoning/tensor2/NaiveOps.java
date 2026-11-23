@@ -7,6 +7,32 @@ import io.teknek.dysfx.Either;
 class NaiveOps implements TensorOps {
 
     @Override
+    public Either<OpSupport, Void> sigmoid(TensorRef target) {
+        for (int row = 0; row < target.shape().first(); row++) {
+            for (int column = 0; column < target.shape().last(); column++) {
+                target.set((float) (1.0 / (1.0 + Math.exp(-target.get(row, column)))), row, column);
+            }
+        }
+        return Either.Right(null);
+    }
+
+    @Override
+    public Either<OpSupport, Void> headwiseMultiply(HeadwiseMultiply operation) {
+        TensorRef target = operation.target();
+        TensorRef gates = operation.gates();
+        for (int row = 0; row < target.shape().first(); row++) {
+            for (int head = 0; head < operation.heads(); head++) {
+                float gate = gates.get(row, head);
+                int offset = head * operation.headSize();
+                for (int column = 0; column < operation.headSize(); column++) {
+                    target.set(target.get(row, offset + column) * gate, row, offset + column);
+                }
+            }
+        }
+        return Either.Right(null);
+    }
+
+    @Override
     public Either<OpSupport, Void> sum(TensorRef input, int row, int offset, int length, TensorRef output) {
         Preconditions.checkArgument(input.dims() == 2, "sum expects a 2D input");
         Preconditions.checkArgument(output.shape().first() == 1 && output.shape().last() == 1,

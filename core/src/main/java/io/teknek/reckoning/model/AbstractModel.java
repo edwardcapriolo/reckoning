@@ -1243,21 +1243,33 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
     public TensorRef batchForwardRef(int[] tokenIds, int startPos, KvCacheSession kvSession,
             Optional<Consumer<List<TensorRef>>> tensorReducer) {
         Preconditions.checkArgument(tokenIds.length > 0, "tokenIds must not be empty");
+        boolean reportProgress = PREFILL_PROGRESS_LISTENER.get() != null;
+        PrefillProgress progress = reportProgress
+                ? new PrefillProgress(tokenIds.length, startPos, System.nanoTime()) : null;
+        if (reportProgress) PREFILL_PROGRESS.set(progress);
         TensorRef lastBatchOutput = null;
-        for (int i = 0; i < tokenIds.length; i += maxPrefillBatchSize) {
-            int[] batch = Arrays.copyOfRange(tokenIds, i, Math.min(tokenIds.length, i + maxPrefillBatchSize));
-            TensorRef input = embedInput.batchInputsToEmbeddings(batch, startPos + i);
-            PlannedTensorRef planned = plannedInputEmbeddingsRef("input_embeddings", input,
-                    io.teknek.reckoning.generator.ForwardPhase.PREFILL);
-            PlannedTensorRef result = forward(planned, startPos + i, kvSession, tensorReducer,
-                    io.teknek.reckoning.generator.ForwardPhase.PREFILL);
-            if (lastBatchOutput != null) {
-                lastBatchOutput.close();
+        try {
+            for (int i = 0; i < tokenIds.length; i += maxPrefillBatchSize) {
+                int[] batch = Arrays.copyOfRange(tokenIds, i, Math.min(tokenIds.length, i + maxPrefillBatchSize));
+                if (progress != null) {
+                    progress.chunkStart = i;
+                    progress.chunkTokens = batch.length;
+                }
+                TensorRef input = embedInput.batchInputsToEmbeddings(batch, startPos + i);
+                PlannedTensorRef planned = plannedInputEmbeddingsRef("input_embeddings", input,
+                        io.teknek.reckoning.generator.ForwardPhase.PREFILL);
+                PlannedTensorRef result = forward(planned, startPos + i, kvSession, tensorReducer,
+                        io.teknek.reckoning.generator.ForwardPhase.PREFILL);
+                if (lastBatchOutput != null) {
+                    lastBatchOutput.close();
+                }
+                lastBatchOutput = result.tensor();
+                kvSession.advanceLength(startPos + i + batch.length);
             }
-            lastBatchOutput = result.tensor();
-            kvSession.advanceLength(startPos + i + batch.length);
+            return lastBatchOutput;
+        } finally {
+            if (reportProgress) PREFILL_PROGRESS.remove();
         }
-        return lastBatchOutput;
     }
 
     public TensorRef batchForwardRef(int[] tokenIds, int startPos, KvCacheSession kvSession) {
@@ -1311,6 +1323,14 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
                 embedding = new PlannedTensorRef(output, embedding.plan());
                 input.close();
                 emitLayerDebug(layer, "layer_output", output);
+                PrefillProgress progress = PREFILL_PROGRESS.get();
+                if (progress != null) {
+                    long now = System.nanoTime();
+                    if (now >= progress.nextLogNanos || layer + 1 == config.numberOfLayers) {
+                        logPrefillProgress(progress, progress.chunkStart, layer + 1, config.numberOfLayers, now);
+                        progress.nextLogNanos = now + PREFILL_PROGRESS_INTERVAL_NANOS;
+                    }
+                }
             }
             return embedding;
         }

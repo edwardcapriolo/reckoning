@@ -345,6 +345,16 @@ final class DeadReckoningTrace implements AutoCloseable {
         decodeEnd.put("kind", "DECODE_END");
         decodeEnd.put("generated_tokens", response.generatedTokens.size());
         write(decodeEnd);
+        ObjectNode timing = JsonUtils.om.createObjectNode();
+        timing.put("kind", "TIMING");
+        timing.put("prompt_ms", response.promptTimeMs);
+        timing.put("time_to_first_token_ms", response.timeToFirstTokenMs);
+        timing.put("generate_ms", response.generateTimeMs);
+        timing.put("avg_time_per_token_ms", response.avgTimePerTokenMs);
+        timing.put("total_ms", response.totalTimeMs);
+        timing.put("prompt_tokens", response.promptTokens);
+        timing.put("generated_tokens", response.generatedTokens.size());
+        write(timing);
         record.put("kind", "RESPONSE_END");
         write(record);
     }

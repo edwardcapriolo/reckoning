@@ -12,6 +12,7 @@ import io.teknek.reckoning.generator2.TransformerBlock2;
 import io.teknek.reckoning.grace.PreTrainedTokenizer;
 import io.teknek.reckoning.math.WrappedForkJoinPool;
 import io.teknek.reckoning.model.AbstractModel;
+import io.teknek.reckoning.model.OutputHeadPolicy;
 import io.teknek.reckoning.model.tensorparallel.TensorParallelCollectives;
 import io.teknek.reckoning.model.tensorparallel.TensorParallelContext;
 import io.teknek.reckoning.safetensors.Config;
@@ -26,7 +27,7 @@ import java.util.stream.IntStream;
 
 
 public class LlamaModel extends AbstractModel {
-    private volatile TensorRef embedTokenWeightsRef;
+    protected volatile TensorRef embedTokenWeightsRef;
 
     public LlamaModel(InferenceType inferenceType, Config c, WeightLoader w, PreTrainedTokenizer t,
             DType workingMemoryDType, DType workingQType, Optional<DType> modelQType,
@@ -140,10 +141,10 @@ public class LlamaModel extends AbstractModel {
     protected SampleOutputRef loadOutputWeightsRef() {
         DType qType = modelQType.orElse(this.modelDType);
         TensorRef norm = weights.loadRef("model.norm.weight");
-        TensorRef head = weights.isWeightPresent("lm_head.weight")
-                ? weights.loadRef("lm_head.weight")
-                : getClass() == LlamaModel.class && embedTokenWeightsRef != null
-                        ? embedTokenWeightsRef : weights.loadRef("model.embed_tokens.weight");
+        String headName = OutputHeadPolicy.weightName(config, weights,
+                "model.embed_tokens.weight", "lm_head.weight");
+        TensorRef head = headName.equals("model.embed_tokens.weight")
+                ? embedTokenWeightsRef : weights.loadRef(headName);
         if (lighter.shouldQuantizeForEfficiency(norm, qType)) {
             TensorRef quantized = lighter.reshape(norm, qType);
             norm.close();

@@ -116,6 +116,11 @@ public final class Spark2_5Config extends Config {
         return ropeTheta(ropeParameters, layerType);
     }
 
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
+    }
+
     private static double ropeTheta(Map<String, Map<String, Object>> parameters, String layerType) {
         if (parameters == null || parameters.get(layerType) == null) {
             return 10000.0;
