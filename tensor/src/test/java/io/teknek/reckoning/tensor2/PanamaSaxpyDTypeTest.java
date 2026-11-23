@@ -121,4 +121,24 @@ class PanamaSaxpyDTypeTest {
             }
         }
     }
+
+    @Test
+    void supportsVectorizedBatchBf16AlphaAndValuesAndF32Output() {
+        Lighter lighter = new Lighter();
+        PanamaOps ops = new PanamaOps();
+        try (TensorRef alpha = lighter.allocate(DType.BF16, TensorShape.of(1, 1));
+             TensorRef values = lighter.allocate(DType.BF16, TensorShape.of(1, 8));
+             TensorRef output = lighter.allocate(DType.F32, TensorShape.of(1, 8))) {
+            alpha.set(2.0f, 0, 0);
+            for (int column = 0; column < 8; column++) {
+                values.set(column + 1.0f, 0, column);
+                output.set(1.0f, 0, column);
+            }
+
+            assertTrue(ops.saxpy(alpha, values, output, 0, 0, 8, 0, 0, 1).isRight());
+            for (int column = 0; column < 8; column++) {
+                assertEquals(1.0f + 2.0f * (column + 1.0f), output.get(0, column), 0.05f);
+            }
+        }
+    }
 }

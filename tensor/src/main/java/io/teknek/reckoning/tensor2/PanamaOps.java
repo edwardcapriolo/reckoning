@@ -1296,6 +1296,14 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
             }
             return Either.Right(null);
         }
+        if (alpha.dType() == DType.BF16 && x.dType() == DType.BF16 && y.dType() == DType.F32
+                && y.shape().first() == 1) {
+            for (int row = 0; row < batchSize; row++) {
+                saxpyBF16F32(alpha.get(0, alphaOffset + row), x, xRowOffset + row, y, 0,
+                        xOffset, yOffset, length);
+            }
+            return Either.Right(null);
+        }
         if (alpha.dType() == DType.F32 && x.dType() == DType.BF16 && y.dType() == DType.BF16
                 && y.shape().first() == 1) {
             for (int row = 0; row < batchSize; row++) {

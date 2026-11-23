@@ -60,7 +60,7 @@ class SparkDeadReckoningIT {
                         new GeneratorParameters()
                                 .withTemperature(0.0f)
                                 .withSeed(42)
-                                .withMaxTokens(6)
+                                .withMaxTokens(20)
                                 .withLogProbs(true)
                                 .withTopLogProbs(5)
                                 .withTimeout(Duration.ofMinutes(10)),

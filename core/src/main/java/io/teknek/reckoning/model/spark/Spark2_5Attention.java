@@ -73,22 +73,30 @@ public final class Spark2_5Attention implements SelfAttention2 {
                             (float) (1.0 / Math.sqrt(config.headSize)), null, true, slidingWindow);
                         try (TensorRef gateScores = lighter.allocate(DType.F32, TensorShape.of(
                             hiddenStates.shape().first(), config.numberOfHeads))) {
-                        lighter.dotProductRows(gateScores, hiddenStates, attentionGate,
-                                0, 0, hiddenStates.shape().last(), 0, config.numberOfHeads, 0);
+                        TensorRef gateInput = linearInputForWeights(hiddenStates, attentionGate);
+                        try {
+                            lighter.dotProductRows(gateScores, gateInput, attentionGate,
+                                    0, 0, hiddenStates.shape().last(), 0, config.numberOfHeads, 0);
+                        } finally {
+                            if (gateInput != hiddenStates) gateInput.close();
+                        }
                         model.emitLayerDebug(layerIndex, "g_proj", gateScores);
                         compositeOps.headwiseSigmoidGate(new HeadwiseSigmoidGate(
                                 attentionOutput, gateScores, config.numberOfHeads, config.headSize));
                     }
-                    TensorRef output = lighter.allocate(DType.F32, TensorShape.of(
-                            hiddenStates.shape().first(), config.embeddingLength));
-                    try {
-                        lighter.dotProductRows(output, attentionOutput, outputProjection,
-                                0, 0, attentionOutput.shape().last(), 0, config.embeddingLength, 0);
-                        return output;
-                    } catch (RuntimeException | Error error) {
-                        output.close();
-                        throw error;
-                    }
+                     TensorRef output = lighter.allocate(DType.F32, TensorShape.of(
+                             hiddenStates.shape().first(), config.embeddingLength));
+                     TensorRef outputInput = linearInputForWeights(attentionOutput, outputProjection);
+                     try {
+                         lighter.dotProductRows(output, outputInput, outputProjection,
+                                 0, 0, attentionOutput.shape().last(), 0, config.embeddingLength, 0);
+                         return output;
+                     } catch (RuntimeException | Error error) {
+                         output.close();
+                         throw error;
+                     } finally {
+                         if (outputInput != attentionOutput) outputInput.close();
+                     }
                 } finally {
                     attentionOutput.close();
                 }
@@ -141,7 +149,7 @@ public final class Spark2_5Attention implements SelfAttention2 {
                         attentionKernel.forward(attentionOutput, split.query(), prefix, split.key(), split.value(),
                                 startPosition, hiddenStates.shape().first(), config.numberOfHeads,
                                 config.numberOfKeyValueHeads, config.headSize,
-                                (float) (1.0 / Math.sqrt(config.headSize)), null, true);
+                                (float) (1.0 / Math.sqrt(config.headSize)), null, true, slidingWindow);
                     }
                 }
                 return projectAttentionOutput(attentionOutput, hiddenStates);
@@ -170,22 +178,30 @@ public final class Spark2_5Attention implements SelfAttention2 {
     private TensorRef projectAttentionOutput(TensorRef attentionOutput, TensorRef hiddenStates) {
         try (TensorRef gateScores = lighter.allocate(DType.F32, TensorShape.of(
                 hiddenStates.shape().first(), config.numberOfHeads))) {
-            lighter.dotProductRows(gateScores, hiddenStates, attentionGate,
-                    0, 0, hiddenStates.shape().last(), 0, config.numberOfHeads, 0);
+            TensorRef gateInput = linearInputForWeights(hiddenStates, attentionGate);
+            try {
+                lighter.dotProductRows(gateScores, gateInput, attentionGate,
+                        0, 0, hiddenStates.shape().last(), 0, config.numberOfHeads, 0);
+            } finally {
+                if (gateInput != hiddenStates) gateInput.close();
+            }
             model.emitLayerDebug(layerIndex, "g_proj", gateScores);
             compositeOps.headwiseSigmoidGate(new HeadwiseSigmoidGate(
                     attentionOutput, gateScores, config.numberOfHeads, config.headSize));
         }
         TensorRef output = lighter.allocate(DType.F32, TensorShape.of(
                 hiddenStates.shape().first(), config.embeddingLength));
+        TensorRef outputInput = linearInputForWeights(attentionOutput, outputProjection);
         try {
-            lighter.dotProductRows(output, attentionOutput, outputProjection,
+            lighter.dotProductRows(output, outputInput, outputProjection,
                     0, 0, attentionOutput.shape().last(), 0, config.embeddingLength, 0);
             model.emitLayerDebug(layerIndex, "attention_output", output);
             return output;
         } catch (RuntimeException | Error error) {
             output.close();
             throw error;
+        } finally {
+            if (outputInput != attentionOutput) outputInput.close();
         }
     }
 
@@ -200,17 +216,26 @@ public final class Spark2_5Attention implements SelfAttention2 {
                         + 2 * config.numberOfKeyValueHeads * config.headSize) {
             throw new IllegalArgumentException("Invalid Spark fused QKV projection shapes");
         }
-        TensorRef fused = lighter.allocate(hiddenStates.dType(), TensorShape.of(
+        TensorRef linearInput = null;
+        TensorRef fused = lighter.allocate(qkvProjection.dType(), TensorShape.of(
                 hiddenStates.shape().first(), qkvProjection.shape().first()));
         try {
-            lighter.dotProductRows(fused, hiddenStates, qkvProjection,
+            linearInput = linearInputForWeights(hiddenStates, qkvProjection);
+            lighter.dotProductRows(fused, linearInput, qkvProjection,
                     0, 0, hiddenStates.shape().last(), 0, qkvProjection.shape().first(), 0);
             model.emitLayerDebug(layerIndex, "q_k_v_proj", fused);
             return fused;
         } catch (RuntimeException | Error error) {
             fused.close();
             throw error;
+        } finally {
+            if (linearInput != null && linearInput != hiddenStates) linearInput.close();
         }
+    }
+
+    private TensorRef linearInputForWeights(TensorRef input, TensorRef weights) {
+        if (input.dType() == weights.dType()) return input;
+        return lighter.reshape(input, weights.dType());
     }
 
 }
