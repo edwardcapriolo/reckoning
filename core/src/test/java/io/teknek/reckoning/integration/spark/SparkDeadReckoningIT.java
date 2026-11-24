@@ -1,5 +1,6 @@
 package io.teknek.reckoning.integration.spark;
 
+import io.teknek.reckoning.DType;
 import io.teknek.reckoning.generator.GeneratorParameters;
 import io.teknek.reckoning.generator.Response;
 import io.teknek.reckoning.model.AbstractModel;
@@ -10,6 +11,7 @@ import io.teknek.reckoning.model.LocalGenerationBackend;
 import io.teknek.reckoning.model.RopeStorageMode;
 import io.teknek.reckoning.safetensors.fetch.ModelFetcher;
 import io.teknek.reckoning.safetensors.prompt.PromptContext;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -25,22 +27,35 @@ import java.util.UUID;
 class SparkDeadReckoningIT {
     @Test
     void capturesSparkTraceAndTiming() throws Exception {
+        capturesSparkTraceAndTiming(false, Path.of("target", "dead-reckoning", "spark-x2.6-1.7b.jsonl"));
+    }
+
+    @Test
+    @Disabled("Q4 Spark output does not yet match the BF16 baseline")
+    void capturesSparkQ4QuantizedTraceAndTiming() throws Exception {
+        capturesSparkTraceAndTiming(true, Path.of("target", "dead-reckoning", "spark-x2.6-1.7b-q4.jsonl"));
+    }
+
+    private void capturesSparkTraceAndTiming(boolean quantizeOnDemand, Path output) throws Exception {
         ModelFetcher fetcher = new ModelFetcher("XHToken", "Spark-X2.6-1.7B")
                 .withDownload(false);
         long loadStart = System.nanoTime();
         System.out.println("[spark-progress] model-load-start");
         fetcher.maybeDownload();
 
-        Path output = Path.of("target", "dead-reckoning", "spark-x2.6-1.7b.jsonl");
         DeadReckoningSelector selector = DeadReckoningSelector.regex(null, null, null, null,
                 DeadReckoningSelector.Capture.STATS, 32,
                 EnumSet.allOf(DeadReckoningSelector.Statistic.class));
 
-        try (AbstractModel model = AutoModelForCausaLm.newBuilder(fetcher)
+        AutoModelForCausaLm.Builder builder = AutoModelForCausaLm.newBuilder(fetcher)
                 .withDownload(false)
                 .withRopeStorageMode(RopeStorageMode.ON_DEMAND)
-                .withDeadReckoning(new DeadReckoningParams(output, 32, List.of(selector)))
-                .buildLocalTransformerModel()) {
+                .withDeadReckoning(new DeadReckoningParams(output, 32, List.of(selector)));
+        if (quantizeOnDemand) {
+            builder.withQuantizeOnDemand(DType.Q4, "edwardcapriolo", "Spark-X2.6-1.7B-JQ4");
+        }
+
+        try (AbstractModel model = builder.buildLocalTransformerModel()) {
             System.out.printf("[spark-progress] model-load-complete elapsed=%.1fs%n",
                     (System.nanoTime() - loadStart) / 1_000_000_000.0);
             PromptContext prompt = model.promptSupport()
@@ -75,6 +90,12 @@ class SparkDeadReckoningIT {
                     + " tokens=" + response.generatedTokens + " finish=" + response.finishReason);
             response.samplerReturns.forEach((sample) -> sample.getTopNLogProbs()
                     .ifPresent(top -> System.out.println("[spark-progress] top-logits " + top)));
+            // model.getMetricRegistry().getMeters().entrySet().stream()
+            //         .filter(entry -> entry.getKey().getKey().startsWith("tensor2.dot_product_rows"))
+            //         .sorted(Map.Entry.comparingByKey(java.util.Comparator.comparing(
+            //                 InferenceProfiler::displayName)))
+            //         .forEach(entry -> System.out.printf("[tensor2-metric] %s count=%d%n",
+            //                 InferenceProfiler.displayName(entry.getKey()), entry.getValue().getCount()));
         }
         System.out.println("DEAD_RECKONING_TRACE=" + output.toAbsolutePath());
     }

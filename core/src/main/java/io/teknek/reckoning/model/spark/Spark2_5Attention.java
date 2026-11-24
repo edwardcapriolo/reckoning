@@ -216,20 +216,16 @@ public final class Spark2_5Attention implements SelfAttention2 {
                         + 2 * config.numberOfKeyValueHeads * config.headSize) {
             throw new IllegalArgumentException("Invalid Spark fused QKV projection shapes");
         }
-        TensorRef linearInput = null;
         TensorRef fused = lighter.allocate(qkvProjection.dType(), TensorShape.of(
                 hiddenStates.shape().first(), qkvProjection.shape().first()));
         try {
-            linearInput = linearInputForWeights(hiddenStates, qkvProjection);
-            lighter.dotProductRows(fused, linearInput, qkvProjection,
+            lighter.dotProductRows(fused, hiddenStates, qkvProjection,
                     0, 0, hiddenStates.shape().last(), 0, qkvProjection.shape().first(), 0);
             model.emitLayerDebug(layerIndex, "q_k_v_proj", fused);
             return fused;
         } catch (RuntimeException | Error error) {
-            fused.close();
+            if (fused != null) fused.close();
             throw error;
-        } finally {
-            if (linearInput != null && linearInput != hiddenStates) linearInput.close();
         }
     }
 

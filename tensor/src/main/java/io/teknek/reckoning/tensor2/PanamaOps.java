@@ -136,6 +136,7 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
 
     private void storeBf16Vector(TensorRef target, int row, int column, FloatVector values) {
         ShortVector encoded = (ShortVector) roundFloatBitsToBf16(values.reinterpretAsInts())
+                .lanewise(VectorOperators.LSHR, 16)
                 .convertShape(VectorOperators.I2S, BF16_SPECIES, 0);
         encoded.intoMemorySegment(target.memorySegment(), memoryOffset(target, row, column),
                 ByteOrder.LITTLE_ENDIAN);

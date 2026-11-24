@@ -84,7 +84,8 @@ public class Qwen3ConfigTest {
                 maxWindowLayers,
                 null,
                 0.0f,
-                List.of("Qwen3ForCausalLM")
+                List.of("Qwen3ForCausalLM"),
+                null
         );
     }
 }

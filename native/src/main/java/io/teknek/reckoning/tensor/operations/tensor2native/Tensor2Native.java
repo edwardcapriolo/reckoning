@@ -152,6 +152,29 @@ public class Tensor2Native extends Tensor2Native$shared {
         }
     }
 
+    private static class tensor2_dot_product_rows_bf16_f32 {
+        static final FunctionDescriptor DESC = FunctionDescriptor.of(
+                Tensor2Native.C_INT, Tensor2Native.C_POINTER, Tensor2Native.C_POINTER,
+                Tensor2Native.C_POINTER, Tensor2Native.C_INT, Tensor2Native.C_INT, Tensor2Native.C_INT,
+                Tensor2Native.C_INT, Tensor2Native.C_INT, Tensor2Native.C_INT, Tensor2Native.C_INT,
+                Tensor2Native.C_INT, Tensor2Native.C_INT, Tensor2Native.C_INT);
+        static final MemorySegment ADDR = SYMBOL_LOOKUP.findOrThrow("tensor2_dot_product_rows_bf16_f32");
+        static final MethodHandle HANDLE = Linker.nativeLinker().downcallHandle(ADDR, DESC);
+    }
+
+    public static int tensor2_dot_product_rows_bf16_f32(MemorySegment result, MemorySegment input,
+            MemorySegment weights, int resultRows, int inputStart, int weightStart, int inputLength,
+            int weightRowStart, int weightRowCount, int resultColumnStart, int resultStride,
+            int inputStride, int weightStride) {
+        try {
+            return (int) tensor2_dot_product_rows_bf16_f32.HANDLE.invokeExact(result, input, weights,
+                    resultRows, inputStart, weightStart, inputLength, weightRowStart, weightRowCount,
+                    resultColumnStart, resultStride, inputStride, weightStride);
+        } catch (Throwable ex) {
+            throw new AssertionError("should not reach here", ex);
+        }
+    }
+
     private static class tensor2_bf16_pool_init {
         static final FunctionDescriptor DESC = FunctionDescriptor.of(Tensor2Native.C_INT, Tensor2Native.C_INT);
         static final MemorySegment ADDR = SYMBOL_LOOKUP.findOrThrow("tensor2_bf16_pool_init");

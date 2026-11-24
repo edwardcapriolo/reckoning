@@ -50,7 +50,8 @@ public class Qwen3MoeConfig extends Qwen3Config {
     ) {
         super(contextLength, embeddingLength, hiddenLength, numberOfHeads, numberOfKeyValueHeads, numberOfLayers,
                 layerNormEps, vocabularySize, bosToken, eosToken, activationFunction, ropeTheta, ropeParameters,
-                headDim, useSlidingWindow, slidingWindow, maxWindowLayers, layerTypes, attentionDropout, architectures);
+                headDim, useSlidingWindow, slidingWindow, maxWindowLayers, layerTypes, attentionDropout, architectures,
+                null);
         this.decoderSparseStep = decoderSparseStep == null ? 1 : decoderSparseStep;
         this.moeIntermediateSize = moeIntermediateSize == null ? 768 : moeIntermediateSize;
         this.numExpertsPerToken = numExpertsPerToken == null ? 8 : numExpertsPerToken;

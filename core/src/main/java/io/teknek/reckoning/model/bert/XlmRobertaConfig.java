@@ -27,11 +27,12 @@ public class XlmRobertaConfig extends BertConfig {
             @JsonProperty("use_cache") Boolean useCache,
             @JsonProperty("label2id") Map<String, Integer> classificationLabels,
             @JsonProperty("bos_token_id") Integer bosTokenId,
-            @JsonProperty("eos_token_id") Integer eosTokenId
+            @JsonProperty("eos_token_id") Integer eosTokenId,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(contextLength, embeddingLength, hiddenLength, numberOfHeads, numberOfLayers, layerNormEps,
                 activationFunction, vocabularySize, typeVocabSize, padTokenId, positionEmbeddingType,
                 hiddenDropoutProb, attentionProbsDropoutProb, isDecoder, useCache, classificationLabels,
-                eosTokenId, bosTokenId);
+                eosTokenId, bosTokenId, tieWordEmbeddings);
     }
 }

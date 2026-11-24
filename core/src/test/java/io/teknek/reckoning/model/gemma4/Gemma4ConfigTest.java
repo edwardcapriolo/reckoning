@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -129,6 +130,16 @@ public class Gemma4ConfigTest {
 
         assertEquals(30.0f, config.finalLogitSoftCapping);
         assertNull(config.attnLogitSoftCapping);
+    }
+
+    @Test
+    public void tieWordEmbeddingsDefaultsToTrueAndHonorsNestedAndRootOverrides() {
+        Map<String, Object> textConfig = e2bLikeTextConfig();
+        assertTrue(new Gemma4Config(textConfig, List.of(), List.of(1)).tieWordEmbeddings());
+
+        textConfig.put("tie_word_embeddings", false);
+        assertFalse(new Gemma4Config(textConfig, List.of(), List.of(1)).tieWordEmbeddings());
+        assertTrue(new Gemma4Config(textConfig, List.of(), List.of(1), true).tieWordEmbeddings());
     }
 
     private static Gemma4Config config(boolean attentionKEqV) {

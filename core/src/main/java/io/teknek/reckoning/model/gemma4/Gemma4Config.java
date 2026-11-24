@@ -28,13 +28,19 @@ public class Gemma4Config extends Config {
     public final Map<String, Map<String, Object>> ropeParametersByLayerType;
     public final Map<String, float[]> ropeInvFreqsByLayerType;
     public final Map<String, Integer> rotaryDimensionsByLayerType;
+    public final boolean tieWordEmbeddings;
+
+    public Gemma4Config(Map<String, Object> textConfig, List<String> architectures, Object rootEosTokens) {
+        this(textConfig, architectures, rootEosTokens, null);
+    }
 
     @JsonCreator
     @SuppressWarnings("unchecked")
     public Gemma4Config(
             @JsonProperty("text_config") Map<String, Object> textConfig,
             @JsonProperty("architectures") List<String> architectures,
-            @JsonProperty("eos_token_id") Object rootEosTokens
+            @JsonProperty("eos_token_id") Object rootEosTokens,
+            @JsonProperty("tie_word_embeddings") Boolean rootTieWordEmbeddings
     ) {
         super(
                 intValue(normalizeTextConfig(textConfig), "max_position_embeddings"),
@@ -63,6 +69,9 @@ public class Gemma4Config extends Config {
 
         Map<String, Object> normalizedTextConfig = normalizeTextConfig(textConfig);
         this.slidingWindow = intValueObject(normalizedTextConfig, "sliding_window");
+        this.tieWordEmbeddings = rootTieWordEmbeddings != null
+                ? rootTieWordEmbeddings
+                : booleanObject(normalizedTextConfig, "tie_word_embeddings", true);
         this.layerTypes = Collections.unmodifiableList(new ArrayList<>((List<String>) normalizedTextConfig.get("layer_types")));
         this.defaultHeadDim = intValue(normalizedTextConfig, "head_dim");
         this.defaultKeyValueHeads = intValue(normalizedTextConfig, "num_key_value_heads");
@@ -93,6 +102,11 @@ public class Gemma4Config extends Config {
         this.ropeParametersByLayerType = Collections.unmodifiableMap(typedRopeParams);
         this.ropeInvFreqsByLayerType = Collections.unmodifiableMap(typedFreqs);
         this.rotaryDimensionsByLayerType = Collections.unmodifiableMap(typedRotaryDims);
+    }
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
     }
 
     private static Map<String, Object> normalizeTextConfig(Map<String, Object> source) {
@@ -255,6 +269,11 @@ public class Gemma4Config extends Config {
     private static boolean booleanValue(Map<String, Object> source, String key) {
         Object value = source.get(key);
         return value instanceof Boolean && (Boolean) value;
+    }
+
+    private static boolean booleanObject(Map<String, Object> source, String key, boolean defaultValue) {
+        Object value = source.get(key);
+        return value == null ? defaultValue : (Boolean) value;
     }
 
     private static float floatValue(Map<String, Object> source, String key) {
