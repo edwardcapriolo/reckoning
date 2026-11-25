@@ -99,6 +99,22 @@ public class Lighter {
         }
     }
 
+    /** Creates a zero-copy view described by {@code operation}. */
+    public TensorRef view(RowView operation) {
+        Objects.requireNonNull(operation, "operation");
+        TensorRef source = Objects.requireNonNull(operation.source(), "source");
+        Preconditions.checkArgument(source.dims() == 2, "RowView requires a rank-2 source");
+        Preconditions.checkArgument(source.dType() == DType.F32 || source.dType() == DType.BF16,
+                "RowView currently supports only F32 and BF16 tensors");
+        Preconditions.checkArgument(source.sidecar(Q4Layout.SCALE_SIDECAR) == null
+                        && source.sidecar(Q8Layout.SCALE_SIDECAR) == null,
+                "RowView does not support quantized sidecars");
+        Preconditions.checkArgument(operation.columnOffset() >= 0 && operation.columnLength() >= 0
+                        && operation.columnOffset() + operation.columnLength() <= source.shape().last(),
+                "RowView column range is out of bounds");
+        return source.columnView(operation.columnOffset(), operation.columnLength());
+    }
+
     public void removeTensorOperations(TensorProviderKind kind) {
         tensorOperations.remove(java.util.Objects.requireNonNull(kind, "kind"));
         compositeOperations.remove(kind);

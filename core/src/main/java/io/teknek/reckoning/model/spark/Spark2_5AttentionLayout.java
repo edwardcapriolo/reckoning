@@ -13,30 +13,26 @@ public final class Spark2_5AttentionLayout {
 
     public static Split splitQkv(TensorRef fused, int queryHeads, int keyValueHeads, int headSize,
             Lighter lighter) {
-        // TODO(Spark): replace these copies with writable column views or a fused projection layout
-        // once TensorRef providers support the required strided views. Correctness comes first here.
         Objects.requireNonNull(fused, "fused");
         Objects.requireNonNull(lighter, "lighter");
         validate(fused, queryHeads, keyValueHeads, headSize);
-        int rows = fused.shape().first();
         int queryWidth = queryHeads * headSize;
         int keyValueWidth = keyValueHeads * headSize;
-        TensorRef query = lighter.allocate(fused.dType(), TensorShape.of(rows, queryWidth));
-        TensorRef key = lighter.allocate(fused.dType(), TensorShape.of(rows, keyValueWidth));
-        TensorRef value = lighter.allocate(fused.dType(), TensorShape.of(rows, keyValueWidth));
+        TensorRef query = null;
+        TensorRef key = null;
+        TensorRef value = null;
         try {
-            for (int row = 0; row < rows; row++) {
-                int source = row * fused.shape().last();
-                lighter.copy(fused, source, query, row * queryWidth, queryWidth);
-                lighter.copy(fused, source + queryWidth, key, row * keyValueWidth, keyValueWidth);
-                lighter.copy(fused, source + queryWidth + keyValueWidth, value,
-                        row * keyValueWidth, keyValueWidth);
-            }
+            query = lighter.view(new io.teknek.reckoning.tensor2.RowView()
+                    .source(fused).columnOffset(0).columnLength(queryWidth));
+            key = lighter.view(new io.teknek.reckoning.tensor2.RowView()
+                    .source(fused).columnOffset(queryWidth).columnLength(keyValueWidth));
+            value = lighter.view(new io.teknek.reckoning.tensor2.RowView()
+                    .source(fused).columnOffset(queryWidth + keyValueWidth).columnLength(keyValueWidth));
             return new Split(query, key, value);
         } catch (RuntimeException | Error error) {
-            query.close();
-            key.close();
-            value.close();
+            if (query != null) query.close();
+            if (key != null) key.close();
+            if (value != null) value.close();
             throw error;
         }
     }
