@@ -413,6 +413,14 @@ public class NativeOps implements TensorOps, CompositeOpsProvider, AutoCloseable
                         .resultRowOffset(outputColumnStart - weightRowStart)
                         .bRowOffset(weightRowStart).rowChunkSize(weightRowCount));
             }
+            if (input.dType() == DType.BF16 && weights.dType() == DType.F32 && output.dType() == DType.F32) {
+                int status = Tensor2Native.tensor2_dot_product_rows_bf16_f32(
+                        baseSegment(output), baseSegment(input), baseSegment(weights),
+                        (int) output.shape().first(), inputColumnStart, weightColumnStart, columnLength,
+                        weightRowStart, weightRowCount, outputColumnStart, output.stride(), input.stride(),
+                        weights.stride());
+                return status == Tensor2Native.TENSOR2_OK() ? Either.Right(null) : Either.Left(OpSupport.Unsupported);
+            }
             if (input.dType() == DType.F32 && weights.dType() == DType.Q4 && output.dType() == DType.F32) {
                 return batchDotProduct(new BatchDotProduct()
                         .result(output).a(input).b(weights)

@@ -92,6 +92,7 @@ public final class DeadReckoningTraceCheck {
             for (String line : Files.readAllLines(path)) {
                 if (line.isBlank()) continue;
                 JsonNode record = JsonUtils.om.readTree(line);
+                if ("TIMING".equals(record.path("kind").asText())) continue;
                 records.computeIfAbsent(key(record), ignored -> new ArrayList<>()).add(record);
             }
         } catch (IOException e) {

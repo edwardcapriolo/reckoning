@@ -19,7 +19,8 @@ public class Gpt2Config extends Config {
             @JsonProperty("layer_norm_epsilon") float layerNormEps,
             @JsonProperty("vocab_size") int vocabularySize,
             @JsonProperty("bos_token_id") int bosToken,
-            @JsonProperty("eos_token_id") int eosToken
+            @JsonProperty("eos_token_id") int eosToken,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(
                 contextLength,
@@ -36,5 +37,13 @@ public class Gpt2Config extends Config {
                 null,
                 null
         );
+        this.tieWordEmbeddings = tieWordEmbeddings == null || tieWordEmbeddings;
+    }
+
+    private final boolean tieWordEmbeddings;
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
     }
 }

@@ -544,6 +544,20 @@ public class Lighter {
         throw new IllegalStateException("No tensor operations support exp");
     }
 
+    public void sigmoid(Sigmoid sigmoid) {
+        for (TensorOps ops : tensorOperations.values()) {
+            if (ops.sigmoid(sigmoid.target()).isRight()) return;
+        }
+        throw new IllegalStateException("No tensor operations support sigmoid");
+    }
+
+    public void headwiseMultiply(HeadwiseMultiply operation) {
+        for (TensorOps ops : tensorOperations.values()) {
+            if (ops.headwiseMultiply(operation).isRight()) return;
+        }
+        throw new IllegalStateException("No tensor operations support headwise multiply");
+    }
+
     public void sum(Sum sum) {
         TensorRef input = sum.getSource();
         TensorRef output = sum.getDestination();
@@ -754,6 +768,23 @@ public class Lighter {
         for (Map.Entry<TensorProviderKind, TensorOps> entry : tensorOperations.entrySet()) {
             Map<String, String> metricTags = new HashMap<>(tags);
             metricTags.put(TENSOR_OP_KEY, entry.getKey().name());
+            metricTags.put("output_dtype", output.dType().name());
+            metricTags.put("input_dtype", input.dType().name());
+            metricTags.put("weight_dtype", weights.dType().name());
+            metricTags.put("output_rows", Long.toString(output.shape().first()));
+            metricTags.put("output_columns", Long.toString(output.shape().last()));
+            metricTags.put("input_rows", Long.toString(input.shape().first()));
+            metricTags.put("input_columns", Long.toString(input.shape().last()));
+            metricTags.put("weight_rows", Long.toString(weights.shape().first()));
+            metricTags.put("weight_columns", Long.toString(weights.shape().last()));
+            metricTags.put("input_column_start", Integer.toString(inputColumnStart));
+            metricTags.put("weight_column_start", Integer.toString(weightColumnStart));
+            metricTags.put("column_length", Integer.toString(columnLength));
+            metricTags.put("weight_row_start", Integer.toString(weightRowStart));
+            metricTags.put("weight_row_count", Integer.toString(weightRowCount));
+            metricTags.put("output_column_start", Integer.toString(outputColumnStart));
+            metricTags.put("kernel", kernel.name());
+            metricTags.put("threading", threading.name());
             Timer timer = metricRegistry.timer(new MetricName("tensor2.dot_product_rows.time", metricTags));
             long startNanos = System.nanoTime();
             Either<OpSupport, Void> outcome = entry.getValue().dotProductRows(output, input, weights,
@@ -836,6 +867,7 @@ public class Lighter {
         }
         return false;
     }
+
 
     public void saxpy(float alpha, TensorRef x, TensorRef y, int xOffset, int yOffset, int length) {
         Preconditions.checkArgument(x != null && y != null, "SAXPY tensors must be set");

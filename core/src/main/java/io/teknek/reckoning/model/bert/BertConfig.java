@@ -29,7 +29,8 @@ public class BertConfig extends Config {
             @JsonProperty("use_cache") Boolean useCache,
             @JsonProperty("label2id") Map<String, Integer> classificationLabels,
             @JsonProperty("sep_token") Integer sepToken,
-            @JsonProperty("cls_token") Integer clsToken
+            @JsonProperty("cls_token") Integer clsToken,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(
                 contextLength,
@@ -54,6 +55,7 @@ public class BertConfig extends Config {
         this.attentionProbsDropoutProb = attentionProbsDropoutProb == null ? 0.1f : attentionProbsDropoutProb;
         this.isDecoder = isDecoder != null && isDecoder;
         this.useCache = useCache == null || useCache;
+        this.tieWordEmbeddings = tieWordEmbeddings == null || tieWordEmbeddings;
     }
 
     public final int typeVocabSize;
@@ -63,12 +65,18 @@ public class BertConfig extends Config {
     public final float attentionProbsDropoutProb;
     public final boolean isDecoder;
     public final boolean useCache;
+    private final boolean tieWordEmbeddings;
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
+    }
 
     public BertConfig(int contextLength, int embeddingLength, int hiddenLength, int numberOfHeads,
             int numberOfLayers, float layerNormEps, ActivationFunction.Type activationFunction, int vocabularySize,
             Map<String, Integer> classificationLabels, Integer sepToken, Integer clsToken) {
         this(contextLength, embeddingLength, hiddenLength, numberOfHeads, numberOfLayers, layerNormEps,
                 activationFunction, vocabularySize, null, null, null, null, null, null, null, classificationLabels,
-                sepToken, clsToken);
+                sepToken, clsToken, null);
     }
 }

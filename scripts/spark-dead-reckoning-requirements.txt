@@ -1,0 +1,3 @@
+# Spark-X2.6 source baseline dependencies.
+transformers==4.57.1
+torch

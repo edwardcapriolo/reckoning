@@ -3,6 +3,7 @@ package io.teknek.reckoning.generator2;
 import com.google.common.base.Preconditions;
 import io.dropwizard.metrics5.MetricRegistry;
 import io.dropwizard.metrics5.Timer;
+import io.teknek.reckoning.DType;
 import io.teknek.reckoning.model.AbstractModel;
 import io.teknek.reckoning.model.InferenceProfiler;
 import io.teknek.reckoning.tensor.kv.KvReadView;
@@ -63,6 +64,8 @@ public final class PackedBlockAttention2 {
                     for (int queryRowStart = 0; queryRowStart < queryRows; queryRowStart += queryBlockRows) {
                         int blockRows = Math.min(queryBlockRows, queryRows - queryRowStart);
                         try (TensorRef scores = model.makeDenseTensorRef(blockRows, totalVisibleRows)) {
+                            try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                    "packedblockattention2.score").time()) {
                             model.getLighter().batchDotProduct(new BatchDotProduct()
                                     .result(scores)
                                     .a(query)
@@ -74,6 +77,7 @@ public final class PackedBlockAttention2 {
                                     .resultRowOffset(0)
                                     .bRowOffset(0)
                                     .rowChunkSize(totalVisibleRows));
+                            }
                             for (int localRow = 0; localRow < blockRows; localRow++) {
                                 int row = queryRowStart + localRow;
                                 int visibleEnd = causalWithinBlock ? prefixRows + row + 1 : totalVisibleRows;
@@ -82,18 +86,38 @@ public final class PackedBlockAttention2 {
                                 int visibleRows = visibleEnd - windowStart;
                                 try (TensorRef scoreRow = scores.slice(localRow);
                                      TensorRef outputRow = output.slice(row)) {
-                                    if (prefixRows + row == totalVisibleRows - 1) {
-                                        emitAttentionDebug("attention_scores", head, prefixRows + row, scoreRow);
-                                    }
-                                    model.getCompositeOps().scaledSoftMax(new ScaledSoftMax(scale)
-                                            .target(scoreRow)
-                                            .offsetAndLength(windowStart, visibleRows)
-                                            .softcap(softcap));
-                                    if (prefixRows + row == totalVisibleRows - 1) {
-                                        emitAttentionDebug("attention_probabilities", head, prefixRows + row, scoreRow);
-                                    }
-                                    model.getLighter().saxpy(scoreRow, values, outputRow, kvOffset, queryOffset,
-                                             headSize, 0, windowStart, visibleRows);
+                                     if (prefixRows + row == totalVisibleRows - 1) {
+                                         emitAttentionDebug("attention_scores", head, prefixRows + row, scoreRow);
+                                     }
+                                     TensorRef scoreInput = quantizeScoresForSoftmax(scoreRow, query, keys);
+                                     TensorRef softmaxScores = scoreInput == null ? scoreRow : scoreInput;
+                                     try {
+                                          try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                                  "packedblockattention2.softmax").time()) {
+                                          model.getCompositeOps().scaledSoftMax(new ScaledSoftMax(scale)
+                                                  .target(softmaxScores)
+                                                  .offsetAndLength(windowStart, visibleRows)
+                                                   .softcap(softcap));
+                                          }
+                                         if (prefixRows + row == totalVisibleRows - 1) {
+                                             emitAttentionDebug("attention_probabilities", head, prefixRows + row,
+                                                     softmaxScores);
+                                         }
+                                         TensorRef attentionWeights = null;
+                                         try {
+                                             attentionWeights = quantizeAttentionWeights(softmaxScores, query, values);
+                                             TensorRef weights = attentionWeights == null ? softmaxScores : attentionWeights;
+                                              try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                                      "packedblockattention2.value_saxpy").time()) {
+                                                  model.getLighter().saxpy(weights, values, outputRow, kvOffset, queryOffset,
+                                                            headSize, windowStart, windowStart, visibleRows);
+                                              }
+                                         } finally {
+                                             if (attentionWeights != null) attentionWeights.close();
+                                         }
+                                      } finally {
+                                          if (scoreInput != null) scoreInput.close();
+                                      }
                                 }
                             }
                         }
@@ -106,6 +130,13 @@ public final class PackedBlockAttention2 {
     public void forward(TensorRef output, TensorRef query, KvReadView prefixView, TensorRef currentKeys,
             TensorRef currentValues, int prefixRows, int queryRows, int numberOfHeads, int numberOfKeyValueHeads,
             int headSize, float scale, Float softcap, boolean causalWithinBlock) {
+        forward(output, query, prefixView, currentKeys, currentValues, prefixRows, queryRows, numberOfHeads,
+                numberOfKeyValueHeads, headSize, scale, softcap, causalWithinBlock, 0);
+    }
+
+    public void forward(TensorRef output, TensorRef query, KvReadView prefixView, TensorRef currentKeys,
+            TensorRef currentValues, int prefixRows, int queryRows, int numberOfHeads, int numberOfKeyValueHeads,
+            int headSize, float scale, Float softcap, boolean causalWithinBlock, int slidingWindow) {
         Preconditions.checkArgument(query.shape().first() == queryRows, "query rows mismatch");
         Preconditions.checkArgument(output.shape().first() == queryRows, "output rows mismatch");
         Preconditions.checkArgument(prefixView.visibleTokens() == prefixRows, "prefix rows mismatch");
@@ -117,7 +148,13 @@ public final class PackedBlockAttention2 {
         try (Timer.Context ignored = InferenceProfiler.timer(metricRegistry,
                 "packedblockattention2.score_value").time()) {
             for (int row = 0; row < queryRows; row++) {
-                int visibleRows = causalWithinBlock ? prefixRows + row + 1 : prefixRows + queryRows;
+                int visibleEnd = causalWithinBlock ? prefixRows + row + 1 : prefixRows + queryRows;
+                int windowStart = slidingWindow > 0 ? Math.max(0, visibleEnd - slidingWindow) : 0;
+                int prefixEnd = Math.min(prefixRows, visibleEnd);
+                int prefixStart = Math.min(windowStart, prefixEnd);
+                int visiblePrefixRows = prefixEnd - prefixStart;
+                int currentStart = Math.max(0, windowStart - prefixRows);
+                int visibleRows = visiblePrefixRows + visibleEnd - Math.max(prefixRows, windowStart);
                 try (TensorRef queryRow = query.slice(row);
                      TensorRef outputRow = output.slice(row);
                      TensorRef scores = model.makeDenseTensorRef(1, visibleRows)) {
@@ -125,14 +162,36 @@ public final class PackedBlockAttention2 {
                         int kvHead = head / headGroupSize;
                         int queryOffset = head * headSize;
                         int kvOffset = kvHead * headSize;
-                        scoreRows(scores, queryRow, prefixView, currentKeys, prefixRows, visibleRows,
-                                queryOffset, kvOffset, headSize);
-                        model.getCompositeOps().scaledSoftMax(new ScaledSoftMax(scale)
-                                .target(scores)
-                                .offsetAndLength(0, visibleRows)
-                                .softcap(softcap));
-                        accumulateRows(scores, outputRow, prefixView, currentValues, prefixRows, visibleRows,
-                                kvOffset, queryOffset, headSize);
+                        try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                "packedblockattention2.score").time()) {
+                            scoreCachedRows(scores, queryRow, prefixView, currentKeys, prefixStart, visiblePrefixRows,
+                                    currentStart, visibleRows, queryOffset, kvOffset, headSize);
+                        }
+                         TensorRef scoreInput = quantizeScoresForSoftmax(scores, query, currentKeys);
+                         TensorRef softmaxScores = scoreInput == null ? scores : scoreInput;
+                         try {
+                              try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                      "packedblockattention2.softmax").time()) {
+                              model.getCompositeOps().scaledSoftMax(new ScaledSoftMax(scale)
+                                     .target(softmaxScores)
+                                     .offsetAndLength(0, visibleRows)
+                                      .softcap(softcap));
+                              }
+                         TensorRef attentionWeights = null;
+                             try {
+                                 attentionWeights = quantizeAttentionWeights(softmaxScores, query, currentValues);
+                                  try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                                          "packedblockattention2.value_saxpy").time()) {
+                                      accumulateCachedRows(attentionWeights == null ? softmaxScores : attentionWeights, outputRow,
+                                              prefixView, currentValues, prefixStart, visiblePrefixRows, currentStart,
+                                              visibleRows, kvOffset, queryOffset, headSize);
+                                  }
+                             } finally {
+                                 if (attentionWeights != null) attentionWeights.close();
+                             }
+                         } finally {
+                             if (scoreInput != null) scoreInput.close();
+                         }
                     }
                 }
             }
@@ -238,6 +297,19 @@ public final class PackedBlockAttention2 {
         }
     }
 
+    private void scoreCachedRows(TensorRef scores, TensorRef queryRow, KvReadView prefixView, TensorRef currentKeys,
+            int prefixStart, int visiblePrefixRows, int currentStart, int visibleRows,
+            int queryOffset, int kvOffset, int headSize) {
+        for (int keyPosition = 0; keyPosition < visibleRows; keyPosition++) {
+            try (TensorRef keyRow = keyPosition < visiblePrefixRows
+                    ? prefixView.keyRowRef(prefixStart + keyPosition)
+                    : currentKeys.slice(currentStart + keyPosition - visiblePrefixRows)) {
+                model.getLighter().dotProductRows(scores, queryRow, keyRow, queryOffset, kvOffset, headSize,
+                        0, 1, keyPosition);
+            }
+        }
+    }
+
     private void accumulateRows(TensorRef scores, TensorRef outputRow, KvReadView prefixView,
             TensorRef currentValues, int prefixRows, int visibleRows, int kvOffset, int queryOffset, int headSize) {
         for (int valuePosition = 0; valuePosition < visibleRows; valuePosition++) {
@@ -250,9 +322,41 @@ public final class PackedBlockAttention2 {
         }
     }
 
+    private void accumulateCachedRows(TensorRef scores, TensorRef outputRow, KvReadView prefixView,
+            TensorRef currentValues, int prefixStart, int visiblePrefixRows, int currentStart, int visibleRows,
+            int kvOffset, int queryOffset, int headSize) {
+        for (int valuePosition = 0; valuePosition < visibleRows; valuePosition++) {
+            try (TensorRef valueRow = valuePosition < visiblePrefixRows
+                    ? prefixView.valueRowRef(prefixStart + valuePosition)
+                    : currentValues.slice(currentStart + valuePosition - visiblePrefixRows)) {
+                model.getLighter().saxpy(scores.get(0, valuePosition), valueRow, outputRow,
+                        kvOffset, queryOffset, headSize);
+            }
+        }
+    }
+
     private void emitAttentionDebug(String stage, int head, int position, TensorRef tensor) {
         if (layerIndex >= 0) {
             model.emitLayerDebug(layerIndex, stage + ".head" + head + ".position" + position, tensor);
+        }
+    }
+
+    /** Optional HF-parity conversion; intentionally isolated for A/B experiments. */
+    private TensorRef quantizeScoresForSoftmax(TensorRef scores, TensorRef query, TensorRef keys) {
+        if (query.dType() != DType.BF16 || keys.dType() != DType.BF16) return null;
+        try (TensorRef bf16Scores = model.getLighter().reshape(scores, DType.BF16)) {
+            return model.getLighter().reshape(bf16Scores, DType.F32);
+        }
+    }
+
+    /** HF Spark casts F32 softmax probabilities back to BF16 before multiplying BF16 values. */
+    private TensorRef quantizeAttentionWeights(TensorRef scores, TensorRef query, TensorRef values) {
+        if (query.dType() != io.teknek.reckoning.DType.BF16 || values.dType() != io.teknek.reckoning.DType.BF16) {
+            return null;
+        }
+        try (Timer.Context timer = InferenceProfiler.timer(metricRegistry,
+                "packedblockattention2.probability_quantize").time()) {
+            return model.getLighter().reshape(scores, io.teknek.reckoning.DType.BF16);
         }
     }
 

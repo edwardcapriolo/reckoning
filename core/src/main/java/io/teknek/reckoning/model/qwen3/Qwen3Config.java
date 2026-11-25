@@ -16,6 +16,7 @@ public class Qwen3Config extends Config {
     public final List<String> layerTypes;
     public final float attentionDropout;
     public final Map<String, Object> ropeParameters;
+    private final boolean tieWordEmbeddings;
 
     @JsonCreator
     public Qwen3Config(
@@ -38,7 +39,8 @@ public class Qwen3Config extends Config {
             @JsonProperty("max_window_layers") Integer maxWindowLayers,
             @JsonProperty("layer_types") List<String> layerTypes,
             @JsonProperty("attention_dropout") Float attentionDropout,
-            @JsonProperty("architectures") List<String> architectures
+            @JsonProperty("architectures") List<String> architectures,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(
                 contextLength,
@@ -70,6 +72,12 @@ public class Qwen3Config extends Config {
         this.layerTypes = layerTypes == null ? defaultLayerTypes(numberOfLayers, this.slidingWindow, this.maxWindowLayers) : List.copyOf(layerTypes);
         this.attentionDropout = attentionDropout == null ? 0.0f : attentionDropout;
         this.ropeParameters = ropeParameters;
+        this.tieWordEmbeddings = Boolean.TRUE.equals(tieWordEmbeddings);
+    }
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
     }
 
     private static Double ropeTheta(Double ropeTheta, Map<String, Object> ropeParameters) {

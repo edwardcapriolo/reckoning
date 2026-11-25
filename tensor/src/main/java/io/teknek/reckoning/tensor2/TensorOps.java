@@ -3,6 +3,14 @@ package io.teknek.reckoning.tensor2;
 import io.teknek.dysfx.Either;
 
 public interface TensorOps {
+      default Either<OpSupport, Void> sigmoid(TensorRef target) {
+           return Either.Left(OpSupport.Unsupported);
+      }
+
+      default Either<OpSupport, Void> headwiseMultiply(HeadwiseMultiply operation) {
+           return Either.Left(OpSupport.Unsupported);
+      }
+
      default Either<OpSupport, Void> sum(TensorRef input, int row, int offset, int length, TensorRef output) {
           return Either.Left(OpSupport.Unsupported);
      }

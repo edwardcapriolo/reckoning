@@ -32,6 +32,117 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
     }
 
     @Override
+    public Either<OpSupport, Void> sigmoid(TensorRef target) {
+        if (target.dType() == DType.BF16) {
+            sigmoidBf16(target);
+            return Either.Right(null);
+        }
+        if (target.dType() != DType.F32) return Either.Left(OpSupport.Unsupported);
+        MemorySegment memory = target.memorySegment();
+        int columns = target.shape().last();
+        int upper = F32_SPECIES.loopBound(columns);
+        FloatVector ones = FloatVector.broadcast(F32_SPECIES, 1.0f);
+        for (int row = 0; row < target.shape().first(); row++) {
+            long base = target.memorySegmentOffset(target.shape().getOffset(row, 0));
+            for (int column = 0; column < upper; column += F32_SPECIES.length()) {
+                long address = base + (long) column * Float.BYTES;
+                FloatVector values = FloatVector.fromMemorySegment(F32_SPECIES, memory, address,
+                        ByteOrder.LITTLE_ENDIAN);
+                ones.div(values.neg().lanewise(VectorOperators.EXP).add(ones))
+                        .intoMemorySegment(memory, address, ByteOrder.LITTLE_ENDIAN);
+            }
+            if (upper < columns) {
+                VectorMask<Float> mask = F32_SPECIES.indexInRange(upper, columns);
+                long address = base + (long) upper * Float.BYTES;
+                FloatVector values = FloatVector.fromMemorySegment(F32_SPECIES, memory, address,
+                        ByteOrder.LITTLE_ENDIAN, mask);
+                ones.div(values.neg().lanewise(VectorOperators.EXP).add(ones))
+                        .intoMemorySegment(memory, address, ByteOrder.LITTLE_ENDIAN, mask);
+            }
+        }
+        return Either.Right(null);
+    }
+
+    private void sigmoidBf16(TensorRef target) {
+        int columns = target.shape().last();
+        int upper = F32_BF16_SPECIES.loopBound(columns);
+        FloatVector ones = FloatVector.broadcast(F32_BF16_SPECIES, 1.0f);
+        for (int row = 0; row < target.shape().first(); row++) {
+            for (int column = 0; column < upper; column += F32_BF16_SPECIES.length()) {
+                FloatVector values = bf16Vector(target, row, column);
+                FloatVector result = ones.div(values.neg().lanewise(VectorOperators.EXP).add(ones));
+                storeBf16Vector(target, row, column, result);
+            }
+            for (int column = upper; column < columns; column++) {
+                float value = target.get(row, column);
+                target.set((float) (1.0 / (1.0 + FastMath.exp(-value))), row, column);
+            }
+        }
+    }
+
+    @Override
+    public Either<OpSupport, Void> headwiseMultiply(HeadwiseMultiply operation) {
+        TensorRef target = operation.target();
+        TensorRef gates = operation.gates();
+        if (target.dType() == DType.BF16 && gates.dType() == DType.BF16) {
+            headwiseMultiplyBf16(operation);
+            return Either.Right(null);
+        }
+        if (target.dType() != DType.F32 || gates.dType() != DType.F32) return Either.Left(OpSupport.Unsupported);
+        int headSize = operation.headSize();
+        int upper = F32_SPECIES.loopBound(headSize);
+        for (int row = 0; row < target.shape().first(); row++) {
+            for (int head = 0; head < operation.heads(); head++) {
+                FloatVector gate = FloatVector.broadcast(F32_SPECIES, gates.get(row, head));
+                long base = target.memorySegmentOffset(target.shape().getOffset(row, head * headSize));
+                for (int column = 0; column < upper; column += F32_SPECIES.length()) {
+                    long address = base + (long) column * Float.BYTES;
+                    FloatVector values = FloatVector.fromMemorySegment(F32_SPECIES, target.memorySegment(),
+                            address, ByteOrder.LITTLE_ENDIAN);
+                    values.mul(gate).intoMemorySegment(target.memorySegment(), address, ByteOrder.LITTLE_ENDIAN);
+                }
+                if (upper < headSize) {
+                    VectorMask<Float> mask = F32_SPECIES.indexInRange(upper, headSize);
+                    long address = base + (long) upper * Float.BYTES;
+                    FloatVector values = FloatVector.fromMemorySegment(F32_SPECIES, target.memorySegment(),
+                            address, ByteOrder.LITTLE_ENDIAN, mask);
+                    values.mul(gate).intoMemorySegment(target.memorySegment(), address,
+                            ByteOrder.LITTLE_ENDIAN, mask);
+                }
+            }
+        }
+        return Either.Right(null);
+    }
+
+    private void headwiseMultiplyBf16(HeadwiseMultiply operation) {
+        TensorRef target = operation.target();
+        int headSize = operation.headSize();
+        int upper = F32_BF16_SPECIES.loopBound(headSize);
+        for (int row = 0; row < target.shape().first(); row++) {
+            for (int head = 0; head < operation.heads(); head++) {
+                FloatVector gate = FloatVector.broadcast(F32_BF16_SPECIES, operation.gates().get(row, head));
+                int offset = head * headSize;
+                for (int column = 0; column < upper; column += F32_BF16_SPECIES.length()) {
+                    FloatVector values = bf16Vector(target, row, offset + column).mul(gate);
+                    storeBf16Vector(target, row, offset + column, values);
+                }
+                for (int column = upper; column < headSize; column++) {
+                    int index = offset + column;
+                    target.set(target.get(row, index) * operation.gates().get(row, head), row, index);
+                }
+            }
+        }
+    }
+
+    private void storeBf16Vector(TensorRef target, int row, int column, FloatVector values) {
+        ShortVector encoded = (ShortVector) roundFloatBitsToBf16(values.reinterpretAsInts())
+                .lanewise(VectorOperators.LSHR, 16)
+                .convertShape(VectorOperators.I2S, BF16_SPECIES, 0);
+        encoded.intoMemorySegment(target.memorySegment(), memoryOffset(target, row, column),
+                ByteOrder.LITTLE_ENDIAN);
+    }
+
+    @Override
     public boolean supportsGemmAccumulate(GemmAccumulate operation) {
         return (operation.target().dType() == DType.F32 || operation.target().dType() == DType.BF16)
                 && operation.target().dType() == operation.left().dType()
@@ -596,7 +707,7 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
         return result.or(sign);
     }
 
-    private IntVector roundFloatBitsToBf16(IntVector bits) {
+    private static IntVector roundFloatBitsToBf16(IntVector bits) {
         return bits.add(BF16_ROUND_BIAS)
                 .add(bits.lanewise(VectorOperators.LSHR, 16).lanewise(VectorOperators.AND, BF16_ROUND_LSB_MASK));
     }
@@ -926,7 +1037,9 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
         return (a.dType() == DType.F32 && (b.dType() == DType.F32 || b.dType() == DType.BF16)
                 && result.dType() == DType.F32)
                 || (a.dType() == DType.BF16 && b.dType() == DType.BF16
-                && (result.dType() == DType.F32 || result.dType() == DType.BF16));
+                && (result.dType() == DType.F32 || result.dType() == DType.BF16))
+                || (a.dType() == DType.BF16 && b.dType() == DType.F32
+                && result.dType() == DType.F32);
     }
 
     private Either<OpSupport, Void> chunkedQ4(BatchDotProduct operation) {
@@ -1054,6 +1167,33 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
                     .bRowOffset(weightRowStart)
                     .rowChunkSize(weightRowCount));
         }
+        if (output.dType() == DType.F32 && input.dType() == DType.BF16
+                && weights.dType() == DType.BF16) {
+            return batchDotProduct(new BatchDotProduct()
+                    .result(output)
+                    .a(input)
+                    .b(weights)
+                    .aColumnOffset(inputColumnStart)
+                    .bColumnOffset(weightColumnStart)
+                    .columnLength(columnLength)
+                    .resultRowOffset(outputColumnStart - weightRowStart)
+                    .bRowOffset(weightRowStart)
+                    .rowChunkSize(weightRowCount));
+        }
+        if (output.dType() == DType.F32 && input.dType() == DType.BF16
+                && weights.dType() == DType.F32) {
+            return batchDotProduct(new BatchDotProduct()
+                    .result(output)
+                    .a(input)
+                    .b(weights)
+                    .aColumnOffset(inputColumnStart)
+                    .bColumnOffset(weightColumnStart)
+                    .columnLength(columnLength)
+                    .resultRowOffset(outputColumnStart - weightRowStart)
+                    .bRowOffset(weightRowStart)
+                    .rowChunkSize(weightRowCount)
+                    .kernel(GemmKernel.ROW));
+        }
         if (output.dType() == DType.F32 && input.dType() == DType.BF16 && weights.dType() == DType.Q4) {
             return batchDotProduct(new BatchDotProduct()
                     .result(output)
@@ -1123,6 +1263,14 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
             saxpyBF16F32(alpha, x, 0, y, 0, xOffset, yOffset, length);
             return Either.Right(null);
         }
+        if (x.dType() == DType.BF16 && y.dType() == DType.BF16 && y.shape().first() == 1) {
+            saxpyBF16BF16(alpha, x, 0, y, 0, xOffset, yOffset, length);
+            return Either.Right(null);
+        }
+        if (x.dType() == DType.F32 && y.dType() == DType.BF16 && y.shape().first() == 1) {
+            saxpyF32BF16(alpha, x, 0, y, 0, xOffset, yOffset, length);
+            return Either.Right(null);
+        }
         if (x.dType() != DType.F32 || y.dType() != DType.F32 || y.shape().first() != 1) {
             return Either.Left(OpSupport.Unsupported);
         }
@@ -1145,6 +1293,30 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
                 && y.shape().first() == 1) {
             for (int row = 0; row < batchSize; row++) {
                 saxpyBF16F32(alpha.get(0, alphaOffset + row), x, xRowOffset + row, y, 0,
+                        xOffset, yOffset, length);
+            }
+            return Either.Right(null);
+        }
+        if (alpha.dType() == DType.BF16 && x.dType() == DType.BF16 && y.dType() == DType.F32
+                && y.shape().first() == 1) {
+            for (int row = 0; row < batchSize; row++) {
+                saxpyBF16F32(alpha.get(0, alphaOffset + row), x, xRowOffset + row, y, 0,
+                        xOffset, yOffset, length);
+            }
+            return Either.Right(null);
+        }
+        if (alpha.dType() == DType.F32 && x.dType() == DType.BF16 && y.dType() == DType.BF16
+                && y.shape().first() == 1) {
+            for (int row = 0; row < batchSize; row++) {
+                saxpyBF16BF16(alpha.get(0, alphaOffset + row), x, xRowOffset + row, y, 0,
+                        xOffset, yOffset, length);
+            }
+            return Either.Right(null);
+        }
+        if (alpha.dType() == DType.F32 && x.dType() == DType.F32 && y.dType() == DType.BF16
+                && y.shape().first() == 1) {
+            for (int row = 0; row < batchSize; row++) {
+                saxpyF32BF16(alpha.get(0, alphaOffset + row), x, xRowOffset + row, y, 0,
                         xOffset, yOffset, length);
             }
             return Either.Right(null);
@@ -1189,6 +1361,40 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
                     .add(bits.lanewise(VectorOperators.LSHR, BF16_BYTE_SHIFT_256)
                             .lanewise(VectorOperators.AND, BF16_ROUND_LSB_MASK));
             ShortVector encoded = (ShortVector) rounded.lanewise(VectorOperators.LSHR, BF16_BYTE_SHIFT_256)
+                    .convertShape(VectorOperators.I2S, shortSpecies, 0);
+            encoded.intoMemorySegment(ySegment, yAddress, ByteOrder.LITTLE_ENDIAN);
+        }
+        for (; column < length; column++) {
+            int xColumn = xOffset + column;
+            int yColumn = yOffset + column;
+            y.set(y.get(yRow, yColumn) + alpha * x.get(xRow, xColumn), yRow, yColumn);
+        }
+    }
+
+    private static void saxpyF32BF16(float alpha, TensorRef x, int xRow, TensorRef y, int yRow,
+            int xOffset, int yOffset, int length) {
+        VectorSpecies<Float> floatSpecies = F32_BF16_SPECIES;
+        VectorSpecies<Short> shortSpecies = BF16_SPECIES;
+        FloatVector factor = FloatVector.broadcast(floatSpecies, alpha);
+        MemorySegment xSegment = x.memorySegment();
+        MemorySegment ySegment = y.memorySegment();
+        long xBase = x.memorySegmentOffset(x.shape().getOffset(xRow, xOffset));
+        long yBase = y.memorySegmentOffset(y.shape().getOffset(yRow, yOffset));
+        int upper = floatSpecies.loopBound(length);
+        int column = 0;
+        for (; column < upper; column += floatSpecies.length()) {
+            long xAddress = xBase + (long) column * Float.BYTES;
+            long yAddress = yBase + (long) column * Short.BYTES;
+            FloatVector values = FloatVector.fromMemorySegment(floatSpecies, xSegment, xAddress,
+                    ByteOrder.LITTLE_ENDIAN);
+            FloatVector target = ShortVector.fromMemorySegment(shortSpecies, ySegment, yAddress,
+                    ByteOrder.LITTLE_ENDIAN)
+                    .convertShape(VectorOperators.S2I, IntVector.SPECIES_256, 0)
+                    .lanewise(VectorOperators.LSHL, BF16_BYTE_SHIFT_256)
+                    .reinterpretAsFloats();
+            IntVector bits = target.add(values.mul(factor)).reinterpretAsInts();
+            ShortVector encoded = (ShortVector) roundFloatBitsToBf16(bits)
+                    .lanewise(VectorOperators.LSHR, BF16_BYTE_SHIFT_256)
                     .convertShape(VectorOperators.I2S, shortSpecies, 0);
             encoded.intoMemorySegment(ySegment, yAddress, ByteOrder.LITTLE_ENDIAN);
         }
@@ -1439,6 +1645,13 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
                     FloatVector av = FloatVector.fromMemorySegment(F32_BF16_SPECIES, a.memorySegment(),
                             memoryOffset(a, aRow, operation.aColumnOffset() + column), ByteOrder.LITTLE_ENDIAN);
                     sum = av.fma(bf16Vector(b, bRow, operation.bColumnOffset() + column), sum);
+                }
+            } else if (b.dType() == DType.F32) {
+                for (; column < upper; column += F32_BF16_SPECIES.length()) {
+                    FloatVector av = bf16Vector(a, aRow, operation.aColumnOffset() + column);
+                    FloatVector bv = FloatVector.fromMemorySegment(F32_BF16_SPECIES, b.memorySegment(),
+                            memoryOffset(b, bRow, operation.bColumnOffset() + column), ByteOrder.LITTLE_ENDIAN);
+                    sum = av.fma(bv, sum);
                 }
             } else {
                 for (; column < upper; column += F32_BF16_SPECIES.length()) {

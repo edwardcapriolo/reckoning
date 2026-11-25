@@ -138,6 +138,28 @@ public final class CompositeOps {
         return lighter.supportsActivationMultiplyQuantize(operation);
     }
 
+    /** Applies a provider-backed sigmoid gate across each contiguous attention head. */
+    public void headwiseSigmoidGate(HeadwiseSigmoidGate operation) {
+        Objects.requireNonNull(operation, "operation");
+        validateHeadwiseSigmoidGate(operation);
+        lighter.sigmoid(new Sigmoid(operation.gateScores()));
+        lighter.headwiseMultiply(new HeadwiseMultiply(operation.target(), operation.gateScores(),
+                operation.heads(), operation.headSize()));
+    }
+
+    private static void validateHeadwiseSigmoidGate(HeadwiseSigmoidGate operation) {
+        TensorRef target = operation.target();
+        TensorRef scores = operation.gateScores();
+        Preconditions.checkArgument(target.dims() == 2 && scores.dims() == 2,
+                "Headwise sigmoid gate requires rank-2 tensors");
+        Preconditions.checkArgument(target.shape().first() == scores.shape().first(),
+                "Headwise sigmoid gate row counts must match");
+        Preconditions.checkArgument(operation.heads() > 0 && operation.headSize() > 0
+                        && scores.shape().last() == operation.heads()
+                        && target.shape().last() == operation.heads() * operation.headSize(),
+                "Headwise sigmoid gate shapes are incompatible");
+    }
+
     private void dotProductRows(TensorRef output, TensorRef input, TensorRef weights, int rowStart, int rowCount,
             boolean batched) {
         for (TensorOps provider : lighter.orderedTensorOperations()) {
@@ -374,16 +396,23 @@ public final class CompositeOps {
                 "RoPE target does not contain all heads");
         Preconditions.checkArgument(inverseFrequencies.shape().last() >= headPiece,
                 "RoPE inverse frequencies do not cover the head");
+        float[] cosines = new float[batchSize * headPiece];
+        float[] sines = new float[batchSize * headPiece];
         for (int row = 0; row < batchSize; row++) {
             int position = startPosition + row;
+            int frequencyOffset = row * headPiece;
+            for (int dimension = 0; dimension < headPiece; dimension++) {
+                double angle = position * (double) inverseFrequencies.get(0, dimension);
+                cosines[frequencyOffset + dimension] = (float) FastMath.cos(angle);
+                sines[frequencyOffset + dimension] = (float) FastMath.sin(angle);
+            }
             for (int head = 0; head < heads; head++) {
                 int offset = head * headSize;
                 for (int dimension = 0; dimension < headPiece; dimension++) {
                     float x0 = target.get(row, offset + dimension);
                     float x1 = target.get(row, offset + dimension + headPiece);
-                    double angle = position * (double) inverseFrequencies.get(0, dimension);
-                    float cosine = (float) FastMath.cos(angle);
-                    float sine = (float) FastMath.sin(angle);
+                    float cosine = cosines[frequencyOffset + dimension];
+                    float sine = sines[frequencyOffset + dimension];
                     target.set(x0 * cosine - x1 * sine, row, offset + dimension);
                     target.set(x0 * sine + x1 * cosine, row, offset + dimension + headPiece);
                 }

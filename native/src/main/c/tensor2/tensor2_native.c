@@ -318,6 +318,39 @@ static inline float tensor2_dot_bf16_bf16(const uint16_t *a, const uint16_t *b, 
     return sum;
 }
 
+static inline float tensor2_dot_bf16_f32(const uint16_t *a, const float *b, int length) {
+    int column = 0;
+#if defined(TENSOR2_ARM_NEON)
+    float32x4_t acc0 = vdupq_n_f32(0.0f);
+    float32x4_t acc1 = vdupq_n_f32(0.0f);
+    for (; column + 8 <= length; column += 8) {
+        uint16x8_t raw = vld1q_u16(a + column);
+        uint32x4_t ai0 = vshlq_n_u32(vmovl_u16(vget_low_u16(raw)), 16);
+        uint32x4_t ai1 = vshlq_n_u32(vmovl_u16(vget_high_u16(raw)), 16);
+        acc0 = vfmaq_f32(acc0, vreinterpretq_f32_u32(ai0), vld1q_f32(b + column));
+        acc1 = vfmaq_f32(acc1, vreinterpretq_f32_u32(ai1), vld1q_f32(b + column + 4));
+    }
+    float sum = vaddvq_f32(vaddq_f32(acc0, acc1));
+#elif defined(__AVX2__)
+    __m256 acc = _mm256_setzero_ps();
+    for (; column + 8 <= length; column += 8) {
+        __m128i raw = _mm_loadu_si128((const __m128i *) (a + column));
+        __m256 values = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(raw), 16));
+        acc = _mm256_add_ps(acc, _mm256_mul_ps(values, _mm256_loadu_ps(b + column)));
+    }
+    float lanes[8] __attribute__((aligned(32)));
+    _mm256_store_ps(lanes, acc);
+    float sum = lanes[0] + lanes[1] + lanes[2] + lanes[3]
+            + lanes[4] + lanes[5] + lanes[6] + lanes[7];
+#else
+    float sum = 0.0f;
+#endif
+    for (; column < length; column++) {
+        sum += tensor2_bf16_to_f32(a[column]) * b[column];
+    }
+    return sum;
+}
+
 tensor2_status tensor2_dot_product_rows_bf16_bf16(
         void *result, const uint16_t *input, const uint16_t *weights, int result_bf16,
         int result_rows, int input_start, int weight_start, int input_length, int weight_row_start,
@@ -341,6 +374,29 @@ tensor2_status tensor2_dot_product_rows_bf16_bf16(
             } else {
                 ((float *) result)[output] = value;
             }
+        }
+    }
+    return TENSOR2_OK;
+}
+
+tensor2_status tensor2_dot_product_rows_bf16_f32(
+        float *result, const uint16_t *input, const float *weights,
+        int result_rows, int input_start, int weight_start, int input_length,
+        int weight_row_start, int weight_row_count, int result_column_start,
+        int result_stride, int input_stride, int weight_stride) {
+    if (result == NULL || input == NULL || weights == NULL || result_rows < 0
+            || input_start < 0 || weight_start < 0 || input_length <= 0 || weight_row_start < 0
+            || weight_row_count < 0 || result_column_start < 0 || result_stride < 0
+            || input_stride < 0 || weight_stride < 0) {
+        return TENSOR2_UNSUPPORTED;
+    }
+    for (int result_row = 0; result_row < result_rows; result_row++) {
+        const uint16_t *a = input + result_row * input_stride + input_start;
+        for (int row = 0; row < weight_row_count; row++) {
+            int weight_row = weight_row_start + row;
+            const float *b = weights + weight_row * weight_stride + weight_start;
+            result[result_row * result_stride + result_column_start + row] =
+                    tensor2_dot_bf16_f32(a, b, input_length);
         }
     }
     return TENSOR2_OK;

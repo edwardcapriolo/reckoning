@@ -34,6 +34,8 @@ import io.teknek.reckoning.model.qwen3.Qwen3Config;
 import io.teknek.reckoning.model.qwen3.Qwen3Model;
 import io.teknek.reckoning.model.qwen3.Qwen3MoeConfig;
 import io.teknek.reckoning.model.qwen3.Qwen3MoeModel;
+import io.teknek.reckoning.model.spark.Spark2_5Config;
+import io.teknek.reckoning.model.spark.Spark2_5Model;
 import io.teknek.reckoning.model.tensorparallel.StaticTensorParallelContext;
 import io.teknek.reckoning.model.tensorparallel.SingleRankTensorParallelCollectives;
 import io.teknek.reckoning.model.tensorparallel.GossipParallelMembership;
@@ -747,6 +749,7 @@ public class AutoModelForCausaLm {
                 case "XLM-ROBERTA" -> JsonUtils.om.readValue(configFile,
                         io.teknek.reckoning.model.bert.XlmRobertaConfig.class);
                 case "LLAMA" -> JsonUtils.om.readValue(configFile, LlamaConfig.class);
+                case "SPARK2_5" -> JsonUtils.om.readValue(configFile, Spark2_5Config.class);
                 case "QWEN2" -> JsonUtils.om.readValue(configFile, Qwen2Config.class);
                 case "QWEN3" -> JsonUtils.om.readValue(configFile, Qwen3Config.class);
                 case "QWEN3_MOE" -> JsonUtils.om.readValue(configFile, Qwen3MoeConfig.class);
@@ -769,6 +772,9 @@ public class AutoModelForCausaLm {
             Optional<DType> effectiveModelQType = quantizeOnDemand.map(QuantizeOnDemand::targetType);
             return switch (modelType) {
                 case "LLAMA" -> new LlamaModel(inferenceType, config, weightLoader, tokenizer, workingMem,
+                        workingQuant, effectiveModelQType, mr, settings, toolCallParser, pool, tensorParallelContext,
+                        tensorParallelCollectives, outputHeadQuantization, lighter);
+                case "SPARK2_5" -> new Spark2_5Model(inferenceType, config, weightLoader, tokenizer, workingMem,
                         workingQuant, effectiveModelQType, mr, settings, toolCallParser, pool, tensorParallelContext,
                         tensorParallelCollectives, outputHeadQuantization, lighter);
                 case "QWEN2" -> new Qwen2Model(inferenceType, config, weightLoader, tokenizer, workingMem,

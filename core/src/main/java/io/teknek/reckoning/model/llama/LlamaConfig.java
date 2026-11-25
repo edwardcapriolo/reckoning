@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 public class LlamaConfig extends Config {
+    private final boolean tieWordEmbeddings;
 
     @JsonCreator
     public LlamaConfig(
@@ -26,7 +27,8 @@ public class LlamaConfig extends Config {
             @JsonProperty("eos_token_id") Object eosToken,
             @JsonProperty("hidden_act") ActivationFunction.Type activationFunction,
             @JsonProperty("rope_theta") Double ropeFreqsTheta,
-            @JsonProperty("rope_scaling") Map<String, Object> ropeScaling
+            @JsonProperty("rope_scaling") Map<String, Object> ropeScaling,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(
                 contextLength,
@@ -43,6 +45,12 @@ public class LlamaConfig extends Config {
                 ropeFreqsTheta == null ? 10000.0 : ropeFreqsTheta,
                 scale(ropeScaling)
         );
+        this.tieWordEmbeddings = Boolean.TRUE.equals(tieWordEmbeddings);
+    }
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
     }
     static Map<String,Object> scale(Map<String, Object> ropeScaling){
         if (ropeScaling == null){

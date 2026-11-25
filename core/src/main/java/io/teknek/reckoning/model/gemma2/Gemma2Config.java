@@ -25,7 +25,8 @@ public class Gemma2Config extends Config {
             @JsonProperty("rope_scaling") Map<String, Object> ropeScaling,
             @JsonProperty("head_dim") Integer headDim,
             @JsonProperty("final_logit_softcapping") Float finalLogitSoftCapping,
-            @JsonProperty("attn_logit_softcapping") Float attnLogitSoftCapping
+            @JsonProperty("attn_logit_softcapping") Float attnLogitSoftCapping,
+            @JsonProperty("tie_word_embeddings") Boolean tieWordEmbeddings
     ) {
         super(
                 contextLength,
@@ -45,5 +46,13 @@ public class Gemma2Config extends Config {
                 finalLogitSoftCapping,
                 attnLogitSoftCapping
         );
+        this.tieWordEmbeddings = tieWordEmbeddings == null || tieWordEmbeddings;
+    }
+
+    private final boolean tieWordEmbeddings;
+
+    @Override
+    public boolean tieWordEmbeddings() {
+        return tieWordEmbeddings;
     }
 }
