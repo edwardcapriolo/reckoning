@@ -15,9 +15,13 @@ public interface TensorOps {
           return Either.Left(OpSupport.Unsupported);
      }
 
-     default Either<OpSupport, Void> exp(TensorRef input, TensorRef output, int offset, int length) {
-          return Either.Left(OpSupport.Unsupported);
-     }
+      default Either<OpSupport, Void> exp(TensorRef input, TensorRef output, int offset, int length) {
+           return Either.Left(OpSupport.Unsupported);
+      }
+
+      default Either<OpSupport, Void> neg(TensorRef input, TensorRef output) {
+           return Either.Left(OpSupport.Unsupported);
+      }
 
      default Either<OpSupport, Void> max(TensorRef input, int row, int offset, int length, TensorRef output) {
           return Either.Left(OpSupport.Unsupported);

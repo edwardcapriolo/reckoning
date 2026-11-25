@@ -42,6 +42,58 @@ class TensorRefViewTest {
     }
 
     @Test
+    void catMaterializesTwoColumnViews() {
+        Lighter lighter = new Lighter(new MetricRegistry());
+        try (TensorRef source = lighter.allocate(DType.F32, TensorShape.of(2, 16));
+             TensorRef result = lighter.allocate(DType.F32, TensorShape.of(2, 16))) {
+            for (int row = 0; row < 2; row++) {
+                for (int column = 0; column < 16; column++) {
+                    source.set(row * 16.0f + column, row, column);
+                }
+            }
+            try (TensorRef first = lighter.view(new RowView()
+                    .source(source).columnOffset(0).columnLength(8));
+                 TensorRef second = lighter.view(new RowView()
+                         .source(source).columnOffset(8).columnLength(8))) {
+                lighter.cat(new Cat().result(result).inputs(first, second));
+            }
+            String display = TensorDisplayUtil.pretty2dDisplayAll(new TensorRefBackedTensor(result));
+            assertEquals("[0][0]=  0.0000 [0][1]=  1.0000 [0][2]=  2.0000 [0][3]=  3.0000 "
+                            + "[0][4]=  4.0000 [0][5]=  5.0000 [0][6]=  6.0000 [0][7]=  7.0000 "
+                            + "[0][8]=  8.0000 [0][9]=  9.0000 [0][10]= 10.0000 [0][11]= 11.0000 "
+                            + "[0][12]= 12.0000 [0][13]= 13.0000 [0][14]= 14.0000 [0][15]= 15.0000 \n"
+                            + "[1][0]= 16.0000 [1][1]= 17.0000 [1][2]= 18.0000 [1][3]= 19.0000 "
+                            + "[1][4]= 20.0000 [1][5]= 21.0000 [1][6]= 22.0000 [1][7]= 23.0000 "
+                            + "[1][8]= 24.0000 [1][9]= 25.0000 [1][10]= 26.0000 [1][11]= 27.0000 "
+                            + "[1][12]= 28.0000 [1][13]= 29.0000 [1][14]= 30.0000 [1][15]= 31.0000 \n",
+                    display);
+        }
+    }
+
+    @Test
+    void negMaterializesNegatedColumnView() {
+        Lighter lighter = new Lighter(new MetricRegistry());
+        try (TensorRef source = lighter.allocate(DType.F32, TensorShape.of(2, 16));
+             TensorRef result = lighter.allocate(DType.F32, TensorShape.of(2, 8))) {
+            for (int row = 0; row < 2; row++) {
+                for (int column = 0; column < 16; column++) {
+                    source.set(row * 16.0f + column, row, column);
+                }
+            }
+            try (TensorRef second = lighter.view(new RowView()
+                    .source(source).columnOffset(8).columnLength(8))) {
+                lighter.neg(new Neg(second).into(result));
+            }
+            String display = TensorDisplayUtil.pretty2dDisplayAll(new TensorRefBackedTensor(result));
+            assertEquals("[0][0]= -8.0000 [0][1]= -9.0000 [0][2]=-10.0000 [0][3]=-11.0000 "
+                            + "[0][4]=-12.0000 [0][5]=-13.0000 [0][6]=-14.0000 [0][7]=-15.0000 \n"
+                            + "[1][0]=-24.0000 [1][1]=-25.0000 [1][2]=-26.0000 [1][3]=-27.0000 "
+                            + "[1][4]=-28.0000 [1][5]=-29.0000 [1][6]=-30.0000 [1][7]=-31.0000 \n",
+                    display);
+        }
+    }
+
+    @Test
     void rejectsUnsupportedViewSourcesAndRanges() {
         Lighter lighter = new Lighter(new MetricRegistry());
         try (TensorRef rankThree = lighter.allocate(DType.F32, TensorShape.of(2, 3, 4));

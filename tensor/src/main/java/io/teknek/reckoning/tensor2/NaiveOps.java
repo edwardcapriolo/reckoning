@@ -63,6 +63,24 @@ class NaiveOps implements TensorOps {
     }
 
     @Override
+    public Either<OpSupport, Void> neg(TensorRef input, TensorRef output) {
+        Preconditions.checkArgument(input.dims() == 2 && output.dims() == 2,
+                "neg expects 2D tensors");
+        Preconditions.checkArgument(input.shape().equals(output.shape()),
+                "Input and output shapes must match");
+        Preconditions.checkArgument(input.dType() == output.dType(),
+                "Input and output dtypes must match");
+        Preconditions.checkArgument(input.dType() == DType.F32 || input.dType() == DType.BF16,
+                "neg supports F32 and BF16 tensors");
+        for (int row = 0; row < input.shape().first(); row++) {
+            for (int column = 0; column < input.shape().last(); column++) {
+                output.set(-input.get(row, column), row, column);
+            }
+        }
+        return Either.Right(null);
+    }
+
+    @Override
     public Either<OpSupport, Void> max(TensorRef input, int row, int offset, int length, TensorRef output) {
         Preconditions.checkArgument(input.dims() == 2, "max expects a 2D input");
         Preconditions.checkArgument(output.shape().first() == 1 && output.shape().last() == 1,

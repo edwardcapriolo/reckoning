@@ -41,6 +41,28 @@ class Spark2_5RopeTest {
         }
     }
 
+    @Test
+    void rotateHalfNegatesSecondHalfThenConcatenatesFirstHalf() {
+        Spark2_5Config config = Spark2_5TestHarness.realShapeConfig();
+        Lighter lighter = new Lighter();
+        try (Spark2_5Rope rope = new Spark2_5Rope(config, "full_attention", lighter);
+             TensorRef source = lighter.allocate(DType.F32, TensorShape.of(2, 8))) {
+            for (int row = 0; row < 2; row++) {
+                for (int column = 0; column < 8; column++) {
+                    source.set(row * 8.0f + column, row, column);
+                }
+            }
+            try (TensorRef result = rope.rotateHalf(source)) {
+                assertEquals(-4.0f, result.get(0, 0));
+                assertEquals(-7.0f, result.get(0, 3));
+                assertEquals(0.0f, result.get(0, 4));
+                assertEquals(3.0f, result.get(0, 7));
+                assertEquals(-12.0f, result.get(1, 0));
+                assertEquals(11.0f, result.get(1, 7));
+            }
+        }
+    }
+
     private static TensorRef target(Lighter lighter) {
         TensorRef result = lighter.allocate(DType.F32, TensorShape.of(1, 8 * 256));
         for (int dimension = 0; dimension < 8 * 256; dimension++) {

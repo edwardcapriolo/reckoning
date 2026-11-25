@@ -248,6 +248,61 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
     }
 
     @Override
+    public Either<OpSupport, Void> neg(TensorRef input, TensorRef output) {
+        if (input.dType() != output.dType()
+                || (input.dType() != DType.F32 && input.dType() != DType.BF16)) {
+            return Either.Left(OpSupport.Unsupported);
+        }
+        Preconditions.checkArgument(input.dims() == 2 && output.dims() == 2,
+                "neg expects 2D tensors");
+        Preconditions.checkArgument(input.shape().equals(output.shape()),
+                "Input and output shapes must match");
+        if (input.dType() == DType.BF16) {
+            negBf16(input, output);
+        } else {
+            negF32(input, output);
+        }
+        return Either.Right(null);
+    }
+
+    private void negF32(TensorRef input, TensorRef output) {
+        int columns = input.shape().last();
+        int upper = F32_SPECIES.loopBound(columns);
+        for (int row = 0; row < input.shape().first(); row++) {
+            for (int column = 0; column < upper; column += F32_SPECIES.length()) {
+                long inputAddress = memoryOffset(input, row, column);
+                long outputAddress = memoryOffset(output, row, column);
+                FloatVector.fromMemorySegment(F32_SPECIES, input.memorySegment(), inputAddress,
+                                ByteOrder.LITTLE_ENDIAN)
+                        .neg()
+                        .intoMemorySegment(output.memorySegment(), outputAddress, ByteOrder.LITTLE_ENDIAN);
+            }
+            if (upper < columns) {
+                VectorMask<Float> mask = F32_SPECIES.indexInRange(upper, columns);
+                long inputAddress = memoryOffset(input, row, upper);
+                long outputAddress = memoryOffset(output, row, upper);
+                FloatVector.fromMemorySegment(F32_SPECIES, input.memorySegment(), inputAddress,
+                                ByteOrder.LITTLE_ENDIAN, mask)
+                        .neg()
+                        .intoMemorySegment(output.memorySegment(), outputAddress, ByteOrder.LITTLE_ENDIAN, mask);
+            }
+        }
+    }
+
+    private void negBf16(TensorRef input, TensorRef output) {
+        int columns = input.shape().last();
+        int upper = F32_BF16_SPECIES.loopBound(columns);
+        for (int row = 0; row < input.shape().first(); row++) {
+            for (int column = 0; column < upper; column += F32_BF16_SPECIES.length()) {
+                storeBf16Vector(output, row, column, bf16Vector(input, row, column).neg());
+            }
+            for (int column = upper; column < columns; column++) {
+                output.set(-input.get(row, column), row, column);
+            }
+        }
+    }
+
+    @Override
     public Either<OpSupport, Void> max(TensorRef input, int row, int offset, int length, TensorRef output) {
         if (input.dType() != DType.F32) {
             return Either.Left(OpSupport.Unsupported);

@@ -12,6 +12,7 @@ import java.util.EnumMap;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.nio.ByteBuffer;
@@ -113,6 +114,37 @@ public class Lighter {
                         && operation.columnOffset() + operation.columnLength() <= source.shape().last(),
                 "RowView column range is out of bounds");
         return source.columnView(operation.columnOffset(), operation.columnLength());
+    }
+
+    /** Materializes a rank-2 column concatenation into the caller-owned result. */
+    public void cat(Cat operation) {
+        Objects.requireNonNull(operation, "operation");
+        TensorRef result = Objects.requireNonNull(operation.result(), "result");
+        List<TensorRef> inputs = Objects.requireNonNull(operation.inputs(), "inputs");
+        Preconditions.checkArgument(operation.dimension() == 1, "Cat currently supports dimension 1 only");
+        Preconditions.checkArgument(!inputs.isEmpty(), "Cat requires at least one input");
+        int rows = inputs.get(0).shape().first();
+        int columns = 0;
+        DType dtype = inputs.get(0).dType();
+        for (TensorRef input : inputs) {
+            Preconditions.checkArgument(input.dims() == 2, "Cat currently supports rank-2 tensors only");
+            Preconditions.checkArgument(input.shape().first() == rows, "Cat input row counts must match");
+            Preconditions.checkArgument(input.dType() == dtype, "Cat input dtypes must match");
+            Preconditions.checkArgument(input.device().equals(result.device()),
+                    "Cat tensors must be on the same device");
+            columns += input.shape().last();
+        }
+        Preconditions.checkArgument(result.dims() == 2
+                        && result.shape().first() == rows && result.shape().last() == columns,
+                "Cat result shape does not match inputs");
+        int destinationColumn = 0;
+        for (TensorRef input : inputs) {
+            int inputColumns = input.shape().last();
+            for (int row = 0; row < rows; row++) {
+                copy(input, row * inputColumns, result, row * columns + destinationColumn, inputColumns);
+            }
+            destinationColumn += inputColumns;
+        }
     }
 
     public void removeTensorOperations(TensorProviderKind kind) {
@@ -558,6 +590,20 @@ public class Lighter {
             }
         }
         throw new IllegalStateException("No tensor operations support exp");
+    }
+
+    public void neg(Neg neg) {
+        TensorRef input = neg.getSource();
+        TensorRef output = neg.getDestination();
+        Preconditions.checkArgument(input != null, "Source tensor must be set");
+        Preconditions.checkArgument(output != null, "Destination tensor must be set");
+        for (Map.Entry<TensorProviderKind, TensorOps> entry : tensorOperations.entrySet()) {
+            Either<OpSupport, Void> result = entry.getValue().neg(input, output);
+            if (result.isRight()) {
+                return;
+            }
+        }
+        throw new IllegalStateException("No tensor operations support neg");
     }
 
     public void sigmoid(Sigmoid sigmoid) {
