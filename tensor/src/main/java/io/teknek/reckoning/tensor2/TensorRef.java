@@ -337,6 +337,55 @@ public class TensorRef implements AutoCloseable, ReadableTensor {
         return new TensorRef(childState, this);
     }
 
+    TensorRef columnView(int columnOffset, int columnLength) {
+        TensorRefState source = requireOpen();
+        TensorShape childShape = TensorShape.of(source.shape().first(), columnLength);
+        Tensor childTensor = new Tensor() {
+            @Override
+            public float get(int... dims) {
+                TensorRef.this.requireOpen();
+                Preconditions.checkArgument(dims.length == 2, "Column view requires row and column");
+                return source.underlying().get(dims[0], columnOffset + dims[1]);
+            }
+
+            @Override
+            public float get(int row, int column) {
+                TensorRef.this.requireOpen();
+                return source.underlying().get(row, columnOffset + column);
+            }
+
+            @Override
+            public void set(float value, int row, int column) {
+                TensorRef.this.requireOpen();
+                source.underlying().set(value, row, columnOffset + column);
+            }
+
+            @Override
+            public void set(float value, int... dims) {
+                Preconditions.checkArgument(dims.length == 2, "Column view requires row and column");
+                set(value, dims[0], dims[1]);
+            }
+
+            @Override
+            public MemorySegment getMemorySegment() {
+                TensorRef.this.requireOpen();
+                return source.underlying().getMemorySegment();
+            }
+
+            @Override
+            public int getMemorySegmentOffset(int offset) {
+                TensorRef.this.requireOpen();
+                int row = offset / columnLength;
+                int column = offset % columnLength;
+                int sourceOffset = source.shape().getOffset(row, columnOffset + column);
+                return source.underlying().getMemorySegmentOffset(sourceOffset);
+            }
+        };
+        TensorRefState childState = new TensorRefState(LeaseState.USED, null, childTensor, childShape,
+                source.dType(), source.stride(), source.device(), Map.of(), source);
+        return new TensorRef(childState, this);
+    }
+
     private static int stride(TensorShape shape) {
         return shape.first() > 1 && shape.dims() == 2 ? shape.getOffset(1, 0) : 0;
     }
