@@ -1312,6 +1312,14 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
     public PlannedTensorRef forward(PlannedTensorRef embedding, int startPos, KvCacheSession kvSession,
             Optional<Consumer<List<TensorRef>>> tensorReducer, io.teknek.reckoning.generator.ForwardPhase phase,
             int batchSize, int sequenceLength, int[] attentionMask) {
+        return forward(embedding, startPos, kvSession, tensorReducer, phase, batchSize, sequenceLength,
+                attentionMask, io.teknek.reckoning.generator2.ForwardContext.NONE);
+    }
+
+    public PlannedTensorRef forward(PlannedTensorRef embedding, int startPos, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, io.teknek.reckoning.generator.ForwardPhase phase,
+            int batchSize, int sequenceLength, int[] attentionMask,
+            io.teknek.reckoning.generator2.ForwardContext context) {
         Preconditions.checkState(transformerBlocks2 != null, "TensorRef transformer blocks are not initialized");
         try (Timer.Context ignored = InferenceProfiler.timer(metricRegistry, "abstractmodel.forward_layers").time()) {
             emitLayerDebug(-1, "input", embedding.tensor());
@@ -1319,7 +1327,7 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
                 throwIfGenerationInterrupted();
                 TensorRef input = embedding.tensor();
                 TensorRef output = transformerBlocks2[layer].forward(input, startPos, kvSession, tensorReducer, phase,
-                        batchSize, sequenceLength, attentionMask);
+                        batchSize, sequenceLength, attentionMask, context);
                 embedding = new PlannedTensorRef(output, embedding.plan());
                 input.close();
                 emitLayerDebug(layer, "layer_output", output);

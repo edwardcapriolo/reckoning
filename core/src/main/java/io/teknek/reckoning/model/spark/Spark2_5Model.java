@@ -4,6 +4,8 @@ import io.dropwizard.metrics5.MetricRegistry;
 import io.teknek.reckoning.DType;
 import io.teknek.reckoning.generator.EmbedInput;
 import io.teknek.reckoning.generator2.TransformerBlock2;
+import io.teknek.reckoning.generator2.ForwardContext;
+import io.teknek.reckoning.generator.ForwardPhase;
 import io.teknek.reckoning.grace.PreTrainedTokenizer;
 import io.teknek.reckoning.model.llama.LlamaModel;
 import io.teknek.reckoning.math.WrappedForkJoinPool;
@@ -19,6 +21,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.List;
+import io.teknek.reckoning.tensor.kv.KvCacheSession;
+import io.teknek.reckoning.tensorlib.PlannedTensorRef;
 
 /** Initial Spark model shell; Spark-specific forward behavior is not implemented yet. */
 public class Spark2_5Model extends LlamaModel {
@@ -67,6 +73,27 @@ public class Spark2_5Model extends LlamaModel {
     @Override
     protected boolean usesTensorRefExecution() {
         return true;
+    }
+
+    @Override
+    public PlannedTensorRef forward(PlannedTensorRef embedding, int startPos, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
+            int batchSize, int sequenceLength, int[] attentionMask, ForwardContext ignored) {
+        Spark2_5Config sparkConfig = (Spark2_5Config) config;
+        try (Spark2_5RopeCache cache = Spark2_5RopeCache.create(sparkConfig, startPos, sequenceLength, lighter)) {
+            Spark2_5ForwardContext context = new Spark2_5ForwardContext(cache,
+                    positions(startPos, sequenceLength), attentionMask);
+            return super.forward(embedding, startPos, kvSession, tensorReducer, phase,
+                    batchSize, sequenceLength, attentionMask, context);
+        }
+    }
+
+    private static int[] positions(int startPosition, int sequenceLength) {
+        int[] positions = new int[sequenceLength];
+        for (int index = 0; index < sequenceLength; index++) {
+            positions[index] = startPosition + index;
+        }
+        return positions;
     }
 
     @Override

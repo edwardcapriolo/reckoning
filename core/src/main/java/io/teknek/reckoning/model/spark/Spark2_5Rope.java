@@ -82,6 +82,19 @@ public final class Spark2_5Rope implements AutoCloseable {
         applyRotationsUsingRotateHalf(target, heads, startPosition);
     }
 
+    public void apply(TensorRef target, int heads, int startPosition,
+            Spark2_5RopeCache.PositionEmbeddings embeddings) {
+        Objects.requireNonNull(embeddings, "embeddings");
+        Objects.requireNonNull(target, "target");
+        if (target.dims() != 2 || heads < 1 || startPosition < 0
+                || target.shape().last() < heads * headSize
+                || embeddings.cos().shape().first() < target.shape().first()
+                || embeddings.cos().shape().last() != rotaryDimension) {
+            throw new IllegalArgumentException("Invalid Spark RoPE target or embeddings");
+        }
+        applyRotationsUsingTables(target, heads, embeddings);
+    }
+
     private void applyRotationsUsingRotateHalf(TensorRef target, int heads, int startPosition) {
         int halfRotary = rotaryDimension / 2;
         for (int head = 0; head < heads; head++) {
@@ -103,6 +116,48 @@ public final class Spark2_5Rope implements AutoCloseable {
                         target.set(x1 * cosine + rotated1 * sine,
                                 row, offset + dimension + halfRotary);
                     }
+                }
+            }
+        }
+    }
+
+    private void applyRotationsUsingTables(TensorRef target, int heads,
+            Spark2_5RopeCache.PositionEmbeddings embeddings) {
+        int halfRotary = rotaryDimension / 2;
+        for (int head = 0; head < heads; head++) {
+            int offset = head * headSize;
+            try (TensorRef rotaryView = lighter.view(new RowView()
+                    .source(target).columnOffset(offset).columnLength(rotaryDimension))) {
+                TensorRef working = target.dType() == DType.F32
+                        ? rotaryView : lighter.reshape(rotaryView, DType.F32);
+                TensorRef result = lighter.allocate(DType.F32,
+                        TensorShape.of(target.shape().first(), rotaryDimension));
+                try (TensorRef rotated = rotateHalf(working)) {
+                for (int row = 0; row < target.shape().first(); row++) {
+                    for (int dimension = 0; dimension < halfRotary; dimension++) {
+                        float cosine = embeddings.cos().get(row, dimension);
+                        float sine = embeddings.sin().get(row, dimension);
+                        float x0 = working.get(row, dimension);
+                        float x1 = working.get(row, dimension + halfRotary);
+                        float rotated0 = rotated.get(row, dimension);
+                        float rotated1 = rotated.get(row, dimension + halfRotary);
+                        result.set(x0 * cosine + rotated0 * sine, row, dimension);
+                        result.set(x1 * cosine + rotated1 * sine, row, dimension + halfRotary);
+                    }
+                }
+                TensorRef converted = target.dType() == DType.F32
+                        ? result : lighter.reshape(result, target.dType());
+                try {
+                    for (int row = 0; row < target.shape().first(); row++) {
+                        int rowOffset = row * rotaryDimension;
+                        lighter.copy(converted, rowOffset, rotaryView, rowOffset, rotaryDimension);
+                    }
+                } finally {
+                    if (converted != result) converted.close();
+                }
+                } finally {
+                    result.close();
+                    if (working != rotaryView) working.close();
                 }
             }
         }

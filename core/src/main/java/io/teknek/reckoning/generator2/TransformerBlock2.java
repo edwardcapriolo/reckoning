@@ -121,12 +121,26 @@ public class TransformerBlock2 {
             Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase, int batchSize,
             int sequenceLength, int[] attentionMask) {
         return forward(hiddenStates, null, startPosition, kvSession, tensorReducer, phase, batchSize, sequenceLength,
-                attentionMask);
+                attentionMask, ForwardContext.NONE);
+    }
+
+    public TensorRef forward(TensorRef hiddenStates, int startPosition, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase, int batchSize,
+            int sequenceLength, int[] attentionMask, ForwardContext context) {
+        return forward(hiddenStates, null, startPosition, kvSession, tensorReducer, phase, batchSize, sequenceLength,
+                attentionMask, context);
     }
 
     public TensorRef forward(TensorRef hiddenStates, TensorRef perLayerInput, int startPosition,
             KvCacheSession kvSession, Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
             int batchSize, int sequenceLength, int[] attentionMask) {
+        return forward(hiddenStates, perLayerInput, startPosition, kvSession, tensorReducer, phase, batchSize,
+                sequenceLength, attentionMask, ForwardContext.NONE);
+    }
+
+    public TensorRef forward(TensorRef hiddenStates, TensorRef perLayerInput, int startPosition,
+            KvCacheSession kvSession, Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
+            int batchSize, int sequenceLength, int[] attentionMask, ForwardContext context) {
         Timer timer = InferenceProfiler.timer(model.getMetricRegistry(), "transformerblock.forward");
         try (Timer.Context ignored = timer.time()) {
             TensorRef residual = hiddenStates;
@@ -135,7 +149,7 @@ public class TransformerBlock2 {
             TensorRef postAttention;
             try (AbstractModel.TensorRefLease preAttentionProjectionInput = preAttentionProjectionInput(preAttentionInput)) {
                 postAttention = attention.forward(preAttentionProjectionInput.tensor(), startPosition, kvSession, tensorReducer, phase,
-                        batchSize, sequenceLength, attentionMask);
+                        batchSize, sequenceLength, attentionMask, context);
             }
             hiddenStates = maybeApplyNorm(postAttention, postAttentionNorm);
             model.emitLayerDebug(layerIndex, "post_attention_norm", hiddenStates);
