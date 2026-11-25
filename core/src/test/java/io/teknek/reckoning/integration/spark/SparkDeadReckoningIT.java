@@ -50,6 +50,8 @@ class SparkDeadReckoningIT {
         AutoModelForCausaLm.Builder builder = AutoModelForCausaLm.newBuilder(fetcher)
                 .withDownload(false)
                 .withRopeStorageMode(RopeStorageMode.ON_DEMAND)
+                .withKvKeyDType(DType.BF16)
+                .withKvValueDType(DType.BF16)
                 .withDeadReckoning(new DeadReckoningParams(output, 32, List.of(selector)));
         if (quantizeOnDemand) {
             builder.withQuantizeOnDemand(DType.Q4, "edwardcapriolo", "Spark-X2.6-1.7B-JQ4");
