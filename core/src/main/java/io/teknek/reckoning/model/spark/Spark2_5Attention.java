@@ -5,6 +5,7 @@ import io.teknek.reckoning.tensor2.Lighter;
 import io.teknek.reckoning.tensor2.CompositeOps;
 import io.teknek.reckoning.tensor2.TensorRef;
 import io.teknek.reckoning.tensor2.HeadwiseSigmoidGate;
+import io.teknek.reckoning.generator2.ForwardContext;
 import io.teknek.reckoning.generator2.SelfAttention2;
 import io.teknek.reckoning.generator2.PackedBlockAttention2;
 import io.teknek.reckoning.generator.ForwardPhase;
@@ -53,6 +54,11 @@ public final class Spark2_5Attention implements SelfAttention2 {
     }
 
     public TensorRef forward(TensorRef hiddenStates, int startPosition) {
+        return forwardUncached(hiddenStates, startPosition, null);
+    }
+
+    private TensorRef forwardUncached(TensorRef hiddenStates,
+            int startPosition, Spark2_5RopeCache.PositionEmbeddings embeddings) {
         try (TensorRef fusedQkv = projectFusedQkv(hiddenStates)) {
             try (Spark2_5AttentionLayout.Split split = Spark2_5AttentionLayout.splitQkv(
                     fusedQkv,
@@ -60,8 +66,8 @@ public final class Spark2_5Attention implements SelfAttention2 {
                     config.numberOfKeyValueHeads,
                     config.headSize,
                     lighter)) {
-                rope.apply(split.query(), config.numberOfHeads, startPosition);
-                rope.apply(split.key(), config.numberOfKeyValueHeads, startPosition);
+                applyRope(split.query(), config.numberOfHeads, startPosition, embeddings);
+                applyRope(split.key(), config.numberOfKeyValueHeads, startPosition, embeddings);
                 TensorRef attentionOutput = lighter.allocate(DType.F32, TensorShape.of(
                         hiddenStates.shape().first(), config.numberOfHeads * config.headSize));
                 try {
@@ -115,7 +121,24 @@ public final class Spark2_5Attention implements SelfAttention2 {
         CacheExecutionMode mode = startPosition == 0
                 ? CacheExecutionMode.PREFILL_UPDATE_CACHE
                 : batchSize == 1 ? CacheExecutionMode.DECODE_UPDATE_CACHE : CacheExecutionMode.PREFILL_UPDATE_CACHE;
-        return forwardWithCache(hiddenStates, startPosition, kvSession, mode);
+        return forwardWithCache(hiddenStates, startPosition, kvSession, mode, null);
+    }
+
+    @Override
+    public TensorRef forward(TensorRef hiddenStates, int startPosition, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase, int batchSize,
+            int sequenceLength, int[] attentionMask, ForwardContext context) {
+        Spark2_5ForwardContext sparkContext = (Spark2_5ForwardContext) context;
+        if (attentionMask != null) {
+            throw new UnsupportedOperationException("Spark external attention masks are not implemented yet");
+        }
+        Spark2_5RopeCache.PositionEmbeddings embeddings = sparkContext.ropeCache()
+                .forLayerType(layerType);
+        if (kvSession == null) return forwardUncached(hiddenStates, startPosition, embeddings);
+        CacheExecutionMode mode = startPosition == 0
+                ? CacheExecutionMode.PREFILL_UPDATE_CACHE
+                : batchSize == 1 ? CacheExecutionMode.DECODE_UPDATE_CACHE : CacheExecutionMode.PREFILL_UPDATE_CACHE;
+        return forwardWithCache(hiddenStates, startPosition, kvSession, mode, embeddings);
     }
 
     @Override
@@ -123,16 +146,17 @@ public final class Spark2_5Attention implements SelfAttention2 {
             Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
             CacheExecutionMode mode) {
         if (kvSession == null || mode == null) return forward(hiddenStates, startPosition);
-        return forwardWithCache(hiddenStates, startPosition, kvSession, mode);
+        return forwardWithCache(hiddenStates, startPosition, kvSession, mode, null);
     }
 
     private TensorRef forwardWithCache(TensorRef hiddenStates, int startPosition,
-            KvCacheSession kvSession, CacheExecutionMode mode) {
+            KvCacheSession kvSession, CacheExecutionMode mode,
+            Spark2_5RopeCache.PositionEmbeddings embeddings) {
         try (TensorRef fusedQkv = projectFusedQkv(hiddenStates);
              Spark2_5AttentionLayout.Split split = Spark2_5AttentionLayout.splitQkv(
                      fusedQkv, config.numberOfHeads, config.numberOfKeyValueHeads, config.headSize, lighter)) {
-            rope.apply(split.query(), config.numberOfHeads, startPosition);
-            rope.apply(split.key(), config.numberOfKeyValueHeads, startPosition);
+            applyRope(split.query(), config.numberOfHeads, startPosition, embeddings);
+            applyRope(split.key(), config.numberOfKeyValueHeads, startPosition, embeddings);
             if (writesCache(mode)) writeCurrentRows(kvSession, mode, split.key(), split.value(), startPosition);
 
             TensorRef attentionOutput = lighter.allocate(DType.F32, TensorShape.of(
@@ -156,6 +180,15 @@ public final class Spark2_5Attention implements SelfAttention2 {
             } finally {
                 attentionOutput.close();
             }
+        }
+    }
+
+    private void applyRope(TensorRef target, int heads, int startPosition,
+            Spark2_5RopeCache.PositionEmbeddings embeddings) {
+        if (embeddings == null) {
+            rope.apply(target, heads, startPosition);
+        } else {
+            rope.apply(target, heads, startPosition, embeddings);
         }
     }
 

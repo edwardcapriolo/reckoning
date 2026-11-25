@@ -22,8 +22,21 @@ public interface SelfAttention2 {
     }
 
     default TensorRef forward(TensorRef input, int startPosition, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase, int batchSize,
+            int sequenceLength, int[] attentionMask, ForwardContext context) {
+        return forward(input, startPosition, kvSession, tensorReducer, phase, batchSize, sequenceLength,
+                attentionMask);
+    }
+
+    default TensorRef forward(TensorRef input, int startPosition, KvCacheSession kvSession,
             Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
             CacheExecutionMode mode) {
         return forward(input, startPosition, kvSession, tensorReducer, phase);
+    }
+
+    default TensorRef forward(TensorRef input, int startPosition, KvCacheSession kvSession,
+            Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
+            CacheExecutionMode mode, ForwardContext context) {
+        return forward(input, startPosition, kvSession, tensorReducer, phase, mode);
     }
 }
