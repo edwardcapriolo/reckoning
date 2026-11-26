@@ -309,6 +309,8 @@ public final class KvBlockManager implements AutoCloseable {
         Preconditions.checkArgument(key.blockIndex() == block.blockIndex(), "key blockIndex does not match block");
         Preconditions.checkArgument(key.blockSize() == block.blockSize(), "key blockSize does not match block");
         Preconditions.checkArgument(key.tokenCount() == block.tokenCount(), "key tokenCount does not match block");
+        Preconditions.checkArgument(key.layers() == block.layerCount(), "key layer count does not match block");
+        Preconditions.checkArgument(key.kvLength() == block.kvLength(), "key KV width does not match block");
         Preconditions.checkArgument(key.layout() == block.layout(), "key layout does not match block");
     }
 

@@ -40,13 +40,18 @@ public final class KvPrefixSnapshotCache implements AutoCloseable {
     }
 
     private final class DenseStoredPrefixEntry implements StoredPrefixEntry {
+        private final int startPosition;
         private final int length;
+        private final int snapshotLayers;
         private final TensorRef[] keysByLayer;
         private final TensorRef[] valuesByLayer;
         private final AtomicBoolean closed = new AtomicBoolean(false);
 
-        private DenseStoredPrefixEntry(int length, TensorRef[] keysByLayer, TensorRef[] valuesByLayer) {
+        private DenseStoredPrefixEntry(int startPosition, int length, int snapshotLayers, TensorRef[] keysByLayer,
+                TensorRef[] valuesByLayer) {
+            this.startPosition = startPosition;
             this.length = length;
+            this.snapshotLayers = snapshotLayers;
             this.keysByLayer = keysByLayer;
             this.valuesByLayer = valuesByLayer;
         }
@@ -62,19 +67,22 @@ public final class KvPrefixSnapshotCache implements AutoCloseable {
                 throw new IllegalStateException("prefix snapshot is closed");
             }
             long start = System.nanoTime();
-            try (KvWriteCursor writer = destination.writer(CacheExecutionMode.PREFILL_UPDATE_CACHE)) {
-                for (int position = 0; position < length; position++) {
-                    for (int layer = 0; layer < layers; layer++) {
-                        try (TensorRef key = keysByLayer[layer].slice(position);
-                             TensorRef value = valuesByLayer[layer].slice(position)) {
-                            writer.write(layer, position, key, value);
+            try {
+                for (int row = 0; row < length; row++) {
+                    int position = startPosition + row;
+                    for (int layer = 0; layer < snapshotLayers; layer++) {
+                        try (TensorRef key = keysByLayer[layer].slice(row);
+                             TensorRef value = valuesByLayer[layer].slice(row)) {
+                            destination.writeAbsoluteForRestore(layer, position, key, value);
                         }
                     }
-                    writer.advanceLength(position + 1);
+                    if (destination.length() < position + 1) destination.advanceLength(position + 1);
                 }
+                destination.advanceLength(Math.max(destination.length(), startPosition + length));
+            } finally {
+                InferenceProfiler.timer(metricRegistry, "kvcache.v2.prefix.restore")
+                        .update(System.nanoTime() - start, TimeUnit.NANOSECONDS);
             }
-            InferenceProfiler.timer(metricRegistry, "kvcache.v2.prefix.restore")
-                    .update(System.nanoTime() - start, TimeUnit.NANOSECONDS);
         }
 
         @Override
@@ -87,6 +95,37 @@ public final class KvPrefixSnapshotCache implements AutoCloseable {
                     value.close();
                 }
             }
+        }
+    }
+
+    private final class GroupedStoredPrefixEntry implements StoredPrefixEntry {
+        private final int length;
+        private final Map<String, DenseStoredPrefixEntry> entries;
+        private final AtomicBoolean closed = new AtomicBoolean(false);
+
+        private GroupedStoredPrefixEntry(int length, Map<String, DenseStoredPrefixEntry> entries) {
+            this.length = length;
+            this.entries = Map.copyOf(entries);
+        }
+
+        @Override
+        public int length() {
+            return length;
+        }
+
+        @Override
+        public void restoreTo(KvCacheSession destination) {
+            if (closed.get()) throw new IllegalStateException("grouped prefix snapshot is closed");
+            Preconditions.checkState(destination.isGrouped(), "grouped prefix requires a grouped destination");
+            destination.prepareGroupedRestore(length);
+            for (Map.Entry<String, DenseStoredPrefixEntry> entry : entries.entrySet()) {
+                entry.getValue().restoreTo(destination.groupSession(entry.getKey()));
+            }
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) entries.values().forEach(DenseStoredPrefixEntry::close);
         }
     }
 
@@ -195,6 +234,9 @@ public final class KvPrefixSnapshotCache implements AutoCloseable {
                     }
                 }
                 StoredPrefixEntry entry = snapshot(source, prefixLen);
+                if (entry == null) {
+                    continue;
+                }
                 boolean inserted = false;
                 synchronized (prefixCache) {
                     if (!prefixCache.containsKey(key)) {
@@ -265,23 +307,52 @@ public final class KvPrefixSnapshotCache implements AutoCloseable {
     }
 
     private StoredPrefixEntry snapshot(KvCacheSession source, int prefixLen) {
-        long start = System.nanoTime();
-        TensorRef[] keys = new TensorRef[layers];
-        TensorRef[] values = new TensorRef[layers];
+        if (source.isGrouped()) return groupedSnapshot(source, prefixLen);
+        return denseSnapshot(source, prefixLen, 0, layers);
+    }
+
+    private StoredPrefixEntry groupedSnapshot(KvCacheSession source, int prefixLen) {
+        Map<String, DenseStoredPrefixEntry> entries = new LinkedHashMap<>();
         try {
-            for (int layer = 0; layer < layers; layer++) {
-                int width = layerKvLength(layer);
-                keys[layer] = lighter.allocateDirty(keyDType, io.teknek.reckoning.tensor.TensorShape.of(prefixLen, width));
-                values[layer] = lighter.allocateDirty(valueDType, io.teknek.reckoning.tensor.TensorShape.of(prefixLen, width));
-                source.copyKeyRows(layer, 0, prefixLen, keys[layer], 0);
-                source.copyValueRows(layer, 0, prefixLen, values[layer], 0);
+            for (String groupId : source.groupIds()) {
+                KvCacheSession group = source.groupSession(groupId);
+                int start = group.groupPolicy().persistentStart(prefixLen);
+                if (start < group.persistentStartPosition()) {
+                    return null;
+                }
+                int firstBlock = start / blockSize;
+                int alignedStart = firstBlock * blockSize;
+                entries.put(groupId, denseSnapshot(group, prefixLen, alignedStart,
+                        group.layerCount()));
+            }
+            return new GroupedStoredPrefixEntry(prefixLen, entries);
+        } catch (RuntimeException | Error e) {
+            entries.values().forEach(DenseStoredPrefixEntry::close);
+            throw e;
+        }
+    }
+
+    private DenseStoredPrefixEntry denseSnapshot(KvCacheSession source, int prefixLen, int startPosition,
+            int snapshotLayers) {
+        long start = System.nanoTime();
+        int rowCount = prefixLen - startPosition;
+        TensorRef[] keys = new TensorRef[snapshotLayers];
+        TensorRef[] values = new TensorRef[snapshotLayers];
+        try {
+            for (int layer = 0; layer < snapshotLayers; layer++) {
+                int width = source.layerKvLength(layer);
+                keys[layer] = lighter.allocateDirty(keyDType, io.teknek.reckoning.tensor.TensorShape.of(rowCount, width));
+                values[layer] = lighter.allocateDirty(valueDType, io.teknek.reckoning.tensor.TensorShape.of(rowCount, width));
+                source.copyKeyRows(layer, startPosition, rowCount, keys[layer], 0);
+                source.copyValueRows(layer, startPosition, rowCount, values[layer], 0);
             }
             long bytes = 0;
-            for (int layer = 0; layer < layers; layer++) {
-                bytes += (long) prefixLen * layerKvLength(layer) * (keyDType.size() + valueDType.size());
+            for (int layer = 0; layer < snapshotLayers; layer++) {
+                int width = source.layerKvLength(layer);
+                bytes += (long) rowCount * width * (keyDType.size() + valueDType.size());
             }
             InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.snapshot.bytes").inc(bytes);
-            return new DenseStoredPrefixEntry(prefixLen, keys, values);
+            return new DenseStoredPrefixEntry(startPosition, rowCount, snapshotLayers, keys, values);
         } catch (RuntimeException | Error e) {
             for (TensorRef key : keys) {
                 if (key != null) {

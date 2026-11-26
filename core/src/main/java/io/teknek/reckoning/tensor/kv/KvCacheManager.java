@@ -7,6 +7,10 @@ import io.teknek.reckoning.tensor.KvBufferCacheSettings;
 import io.teknek.reckoning.tensor2.Lighter;
 
 import java.util.Objects;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.ArrayList;
 
 /** Opens standalone KV cache v2 sessions. */
 public final class KvCacheManager {
@@ -20,6 +24,9 @@ public final class KvCacheManager {
     private final KvBufferCacheSettings settings;
     private final Lighter lighter;
     private volatile int[] layerKvLengths;
+    private volatile Map<String, KvCacheGroupPolicy> groupPolicies;
+    private volatile List<KvCacheGroupPolicy> orderedGroupPolicies;
+    private volatile int[] layerGroupIndexes;
 
     public KvCacheManager(int layers, int contextLength, int kvLength, DType dtype,
             KvBufferCacheSettings settings, MetricRegistry metricRegistry,
@@ -44,6 +51,36 @@ public final class KvCacheManager {
         this.metricRegistry = Objects.requireNonNull(metricRegistry, "metricRegistry");
         this.trackReadViews = trackReadViews;
         this.lighter = Objects.requireNonNull(lighter, "lighter");
+        this.groupPolicies = Map.of("full", KvCacheGroupPolicy.full());
+        this.orderedGroupPolicies = List.of(KvCacheGroupPolicy.full());
+    }
+
+    /** Creates a manager with explicit physical group policies and layer routing. */
+    public KvCacheManager(int layers, int contextLength, int kvLength, DType dtype,
+            KvBufferCacheSettings settings, MetricRegistry metricRegistry, boolean trackReadViews,
+            List<KvCacheGroupPolicy> policies, int[] layerGroupIndexes) {
+        this(layers, contextLength, kvLength, dtype, settings, metricRegistry, trackReadViews,
+                new Lighter(metricRegistry), policies, layerGroupIndexes);
+    }
+
+    public KvCacheManager(int layers, int contextLength, int kvLength, DType dtype,
+            KvBufferCacheSettings settings, MetricRegistry metricRegistry, boolean trackReadViews,
+            Lighter lighter, List<KvCacheGroupPolicy> policies, int[] layerGroupIndexes) {
+        this(layers, contextLength, kvLength, dtype, settings, metricRegistry, trackReadViews, lighter);
+        Preconditions.checkArgument(policies != null && !policies.isEmpty(), "at least one group is required");
+        HashMap<String, KvCacheGroupPolicy> byId = new HashMap<>();
+        policies.forEach(policy -> {
+            Preconditions.checkArgument(byId.put(policy.groupId(), policy) == null,
+                    "duplicate KV cache group: %s", policy.groupId());
+        });
+        Preconditions.checkArgument(layerGroupIndexes != null && layerGroupIndexes.length == layers,
+                "layer group indexes must equal layer count");
+        for (int index : layerGroupIndexes) {
+            Preconditions.checkArgument(index >= 0 && index < policies.size(), "layer group index out of bounds");
+        }
+        this.groupPolicies = Map.copyOf(byId);
+        this.orderedGroupPolicies = List.copyOf(policies);
+        this.layerGroupIndexes = layerGroupIndexes.clone();
     }
 
     public void setLayerKvLengths(int[] lengths) {
@@ -64,9 +101,61 @@ public final class KvCacheManager {
         return layerKvLengths == null ? null : layerKvLengths.clone();
     }
 
+    /** Configures independently-owned cache groups before the first session is opened. */
+    public synchronized void configureGroups(List<KvCacheGroupPolicy> policies, int[] layerGroupIndexes) {
+        Preconditions.checkState(orderedGroupPolicies.size() == 1
+                        && orderedGroupPolicies.get(0).type() == KvCacheGroupType.FULL
+                        && this.layerGroupIndexes == null,
+                "KV cache groups are already configured");
+        Preconditions.checkArgument(policies != null && !policies.isEmpty(), "at least one group is required");
+        HashMap<String, KvCacheGroupPolicy> byId = new HashMap<>();
+        policies.forEach(policy -> {
+            Preconditions.checkArgument(byId.put(policy.groupId(), policy) == null,
+                    "duplicate KV cache group: %s", policy.groupId());
+        });
+        Preconditions.checkArgument(layerGroupIndexes != null && layerGroupIndexes.length == layers,
+                "layer group indexes must equal layer count");
+        for (int index : layerGroupIndexes) {
+            Preconditions.checkArgument(index >= 0 && index < policies.size(), "layer group index out of bounds");
+        }
+        groupPolicies = Map.copyOf(byId);
+        orderedGroupPolicies = List.copyOf(policies);
+        this.layerGroupIndexes = layerGroupIndexes.clone();
+    }
+
     public KvCacheSession openSession() {
         metricRegistry.meter("kvcache.v2.session.open").mark();
+        if (layerGroupIndexes == null) {
+            return openSession("full");
+        }
         return new KvCacheSession(layers, contextLength, kvLength, blockSize, dtype, metricRegistry,
-                trackReadViews, settings, lighter, layerKvLengths);
+                trackReadViews, settings, lighter, layerKvLengths, orderedGroupPolicies,
+                layerGroupIndexes);
+    }
+
+    public KvCacheSession openSession(String groupId) {
+        KvCacheGroupPolicy policy = Objects.requireNonNull(groupPolicies.get(groupId), "unknown group: " + groupId);
+        return new KvCacheSession(layers, contextLength, kvLength, blockSize, dtype, metricRegistry,
+                trackReadViews, settings, lighter, layerKvLengths, policy);
+    }
+
+    /** Opens the independently-owned group selected for a layer. */
+    public KvCacheSession openSessionForLayer(int layer) {
+        return openSession(groupForLayer(layer).groupId());
+    }
+
+    public List<KvCacheGroupPolicy> groupPolicies() {
+        return List.copyOf(groupPolicies.values());
+    }
+
+    public KvCacheGroupPolicy groupForLayer(int layer) {
+        Preconditions.checkArgument(layer >= 0 && layer < layers, "layer out of bounds");
+        if (layerGroupIndexes == null) return groupPolicies.get("full");
+        return orderedGroupPolicies.get(layerGroupIndexes[layer]);
+    }
+
+    public KvGroupBlockKey groupBlockKey(String groupId, KvBlockKey blockKey) {
+        Preconditions.checkArgument(groupPolicies.containsKey(groupId), "unknown group: %s", groupId);
+        return new KvGroupBlockKey(groupId, blockKey.withGroupId(groupId));
     }
 }

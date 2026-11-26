@@ -54,6 +54,7 @@ import io.teknek.reckoning.tensor.kv.KvBlock;
 import io.teknek.reckoning.tensor.kv.KvBlockKey;
 import io.teknek.reckoning.tensor.kv.KvBlockLease;
 import io.teknek.reckoning.tensor.kv.KvBlockManager;
+import io.teknek.reckoning.tensor.kv.KvCacheGroupPolicy;
 import io.teknek.reckoning.tensor.kv.KvCacheManager;
 import io.teknek.reckoning.tensor.kv.KvCacheSession;
 import io.teknek.reckoning.tensor.kv.KvPrefixSnapshotCache;
@@ -471,16 +472,24 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
         if (kvBufferCacheSettings.getPrefixCacheMode() != KvBufferCacheSettings.PrefixCacheMode.SHARED_BLOCKS) {
             return 0;
         }
+        int blockSize = kvBufferCacheSettings.getBlockSize();
+        int fullTokens = (Math.min(promptTokens.length,
+                kvBufferCacheSettings.getMaxPrefixTokensPerPrompt()) / blockSize) * blockSize;
+        if (destination.isGrouped()) destination.prepareGroupedRestore(fullTokens);
         int restoredTokens = 0;
-        for (KvBlockKey key : sharedPrefixBlockKeys(promptTokens, cacheSalt)) {
-            KvBlockLease lease = kvBlockManager.retain(key, destination.sessionId());
-            if (lease == null) {
-                break;
+        for (String groupId : destination.groupIds()) {
+            KvCacheSession groupDestination = destination.isGrouped()
+                    ? destination.groupSession(groupId) : destination;
+            for (KvBlockKey key : sharedPrefixBlockKeys(promptTokens, cacheSalt,
+                    groupDestination.groupPolicy(), groupDestination.layerCount(), groupDestination.kvLength())) {
+                KvBlockLease lease = kvBlockManager.retain(key, groupDestination.sessionId());
+                if (lease == null) break;
+                if (destination.isGrouped()) destination.attachCommittedBlock(groupId, lease);
+                else destination.attachCommittedBlock(lease);
+                restoredTokens = Math.max(restoredTokens, keyEndPositionExclusive(key));
+                InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.blocks.attached").inc();
+                InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.bytes.attached").inc(lease.block().encodedBytes());
             }
-            destination.attachCommittedBlock(lease);
-            restoredTokens += key.tokenCount();
-            InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.blocks.attached").inc();
-            InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.bytes.attached").inc(lease.block().encodedBytes());
         }
         if (restoredTokens > 0) {
             InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.tokens.reused").inc(restoredTokens);
@@ -492,15 +501,25 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
         if (kvBufferCacheSettings.getPrefixCacheMode() != KvBufferCacheSettings.PrefixCacheMode.SHARED_BLOCKS) {
             return;
         }
-        for (KvBlockKey key : sharedPrefixBlockKeys(promptTokens, cacheSalt)) {
-            if (keyEndPositionExclusive(key) > source.length() || source.committedBlockIsLeased(key.blockIndex())) {
-                continue;
+        for (String groupId : source.groupIds()) {
+            KvCacheSession groupSource = source.isGrouped() ? source.groupSession(groupId) : source;
+            for (KvBlockKey key : sharedPrefixBlockKeys(promptTokens, cacheSalt,
+                    groupSource.groupPolicy(), groupSource.layerCount(), groupSource.kvLength())) {
+                if (keyEndPositionExclusive(key) > groupSource.length()
+                        || (source.isGrouped()
+                        ? source.committedBlockIsLeased(groupId, key.blockIndex())
+                        : source.committedBlockIsLeased(key.blockIndex()))) {
+                    continue;
+                }
+                KvBlock block = source.isGrouped()
+                        ? source.detachCommittedBlock(groupId, key.blockIndex())
+                        : source.detachCommittedBlock(key.blockIndex());
+                KvBlockLease lease = kvBlockManager.admitAndRetain(key, block, groupSource.sessionId(),
+                        sharedPrefixDiskAdmitTokenCount(promptTokens));
+                if (source.isGrouped()) source.attachCommittedBlock(groupId, lease);
+                else source.attachCommittedBlock(lease);
+                InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.blocks.admitted").inc();
             }
-            KvBlock block = source.detachCommittedBlock(key.blockIndex());
-            KvBlockLease lease = kvBlockManager.admitAndRetain(key, block, source.sessionId(),
-                    sharedPrefixDiskAdmitTokenCount(promptTokens));
-            source.attachCommittedBlock(lease);
-            InferenceProfiler.counter(metricRegistry, "kvcache.v2.prefix.blocks.admitted").inc();
         }
     }
 
@@ -510,26 +529,31 @@ public abstract class AbstractModel implements Generator, Classifier, TensorPlan
         return (limit / blockSize) * blockSize;
     }
 
-    private List<KvBlockKey> sharedPrefixBlockKeys(int[] promptTokens, Optional<String> cacheSalt) {
+    private List<KvBlockKey> sharedPrefixBlockKeys(int[] promptTokens, Optional<String> cacheSalt,
+            KvCacheGroupPolicy policy, int layers, int kvLength) {
         int blockSize = kvBufferCacheSettings.getBlockSize();
         int limit = Math.min(promptTokens.length, kvBufferCacheSettings.getMaxPrefixTokensPerPrompt());
         int fullTokens = (limit / blockSize) * blockSize;
         if (fullTokens == 0) {
             return List.of();
         }
-        ArrayList<KvBlockKey> keys = new ArrayList<>(fullTokens / blockSize);
+        int firstBlock = policy.type() == io.teknek.reckoning.tensor.kv.KvCacheGroupType.SLIDING
+                ? policy.persistentStart(fullTokens) / blockSize : 0;
+        ArrayList<KvBlockKey> keys = new ArrayList<>(Math.max(0, fullTokens / blockSize - firstBlock));
         long parentHash = 0L;
         for (int blockIndex = 0; blockIndex < fullTokens / blockSize; blockIndex++) {
             long tokenBlockHash = tokenBlockHash(parentHash, promptTokens, blockIndex * blockSize, blockSize);
-            keys.add(new KvBlockKey(1, effectiveModelFingerprint(), adapterFingerprint(), tokenizerFingerprint(),
+            if (blockIndex >= firstBlock) {
+                keys.add(new KvBlockKey(1, effectiveModelFingerprint(), adapterFingerprint(), tokenizerFingerprint(),
                     cacheSalt.orElse(""), ropeConfigHash(), attentionConfigHash(), blockIndex, parentHash,
-                    tokenBlockHash, blockSize, blockSize, config.numberOfLayers, getLocalKvLength(),
+                    tokenBlockHash, blockSize, blockSize, layers, kvLength,
                     kvBufferCacheSettings.getKvKeyDType(), kvBufferCacheSettings.getKvValueDType(),
                     kvBufferCacheSettings.getKvBlockStoragePolicy() == KvBufferCacheSettings.KvBlockStoragePolicy.DENSE
                             ? io.teknek.reckoning.tensor.kv.KvBlockLayout.DENSE
                             : io.teknek.reckoning.tensor.kv.KvBlockLayout.MSE_TURBOQUANT,
                     kvBufferCacheSettings.getKvTurboQuantBits(), tensorParallelContext.size(),
-                    tensorParallelContext.rank(), 0L, localShardId()));
+                    tensorParallelContext.rank(), 0L, localShardId(), policy.groupId()));
+            }
             parentHash = tokenBlockHash;
         }
         return keys;

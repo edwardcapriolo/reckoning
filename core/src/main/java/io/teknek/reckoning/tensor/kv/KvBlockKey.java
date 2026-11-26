@@ -28,7 +28,20 @@ public record KvBlockKey(
         int tensorParallelSize,
         int tensorParallelRank,
         long assignmentEpoch,
-        String localShardId) {
+        String localShardId,
+        String groupId) {
+    public KvBlockKey(int formatVersion, String modelCacheId, String adapterFingerprint,
+            String tokenizerFingerprint, String runtimeSalt, String ropeConfigHash,
+            String attentionConfigHash, int blockIndex, long parentTokenHash, long tokenBlockHash,
+            int blockSize, int tokenCount, int layers, int kvLength, DType keyDType, DType valueDType,
+            KvBlockLayout layout, int turboQuantBits, int tensorParallelSize, int tensorParallelRank,
+            long assignmentEpoch, String localShardId) {
+        this(formatVersion, modelCacheId, adapterFingerprint, tokenizerFingerprint, runtimeSalt,
+                ropeConfigHash, attentionConfigHash, blockIndex, parentTokenHash, tokenBlockHash,
+                blockSize, tokenCount, layers, kvLength, keyDType, valueDType, layout, turboQuantBits,
+                tensorParallelSize, tensorParallelRank, assignmentEpoch, localShardId, "full");
+    }
+
     public KvBlockKey {
         Preconditions.checkArgument(formatVersion > 0, "formatVersion must be > 0");
         modelCacheId = Objects.requireNonNull(modelCacheId, "modelCacheId");
@@ -41,6 +54,10 @@ public record KvBlockKey(
         valueDType = Objects.requireNonNull(valueDType, "valueDType");
         layout = Objects.requireNonNull(layout, "layout");
         localShardId = Objects.requireNonNull(localShardId, "localShardId");
+        // Older disk metadata predates groupId and is part of the default FULL namespace.
+        groupId = groupId == null ? "full" : groupId;
+        groupId = Objects.requireNonNull(groupId, "groupId");
+        Preconditions.checkArgument(!groupId.isBlank(), "groupId must not be blank");
         Preconditions.checkArgument(blockIndex >= 0, "blockIndex must be >= 0");
         Preconditions.checkArgument(blockSize > 0, "blockSize must be > 0");
         Preconditions.checkArgument(tokenCount > 0 && tokenCount <= blockSize, "tokenCount out of bounds");
@@ -57,6 +74,14 @@ public record KvBlockKey(
             DType valueDType, KvBlockLayout layout, int turboQuantBits) {
         return new KvBlockKey(1, modelCacheId, "none", "unknown", runtimeSalt, "unknown", "unknown", blockIndex,
                 parentTokenHash, tokenBlockHash, blockSize, tokenCount, layers, kvLength, keyDType, valueDType, layout,
-                turboQuantBits, 1, 0, 0L, "local");
+                turboQuantBits, 1, 0, 0L, "local", "full");
+    }
+
+    public KvBlockKey withGroupId(String groupId) {
+        return new KvBlockKey(formatVersion, modelCacheId, adapterFingerprint, tokenizerFingerprint,
+                runtimeSalt, ropeConfigHash, attentionConfigHash, blockIndex, parentTokenHash,
+                tokenBlockHash, blockSize, tokenCount, layers, kvLength, keyDType, valueDType,
+                layout, turboQuantBits, tensorParallelSize, tensorParallelRank, assignmentEpoch,
+                localShardId, groupId);
     }
 }

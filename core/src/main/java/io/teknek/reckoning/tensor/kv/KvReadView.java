@@ -8,12 +8,14 @@ public final class KvReadView implements AutoCloseable {
     private final int layer;
     private final int visibleTokens;
     private final AttentionPattern pattern;
+    private final int currentRows;
 
-    KvReadView(KvCacheSession session, int layer, int visibleTokens, AttentionPattern pattern) {
+    KvReadView(KvCacheSession session, int layer, int visibleTokens, AttentionPattern pattern, int currentRows) {
         this.session = session;
         this.layer = layer;
         this.visibleTokens = visibleTokens;
         this.pattern = pattern;
+        this.currentRows = currentRows;
     }
 
     public int layer() {
@@ -26,6 +28,26 @@ public final class KvReadView implements AutoCloseable {
 
     public AttentionPattern pattern() {
         return pattern;
+    }
+
+    public int persistentStartPosition() {
+        return session.groupPolicyForLayer(layer).persistentStart(visibleTokens);
+    }
+
+    public int persistentTokenCount() {
+        return visibleTokens - persistentStartPosition();
+    }
+
+    public int attentionVisibleStart() {
+        return session.groupPolicyForLayer(layer).attentionStart(visibleTokens, currentRows);
+    }
+
+    public int attentionVisibleEndExclusive() {
+        return session.groupPolicyForLayer(layer).attentionEndExclusive(visibleTokens, currentRows);
+    }
+
+    public int currentRows() {
+        return currentRows;
     }
 
     public io.teknek.reckoning.DType keyDType() {
