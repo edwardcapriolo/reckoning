@@ -12,6 +12,7 @@ import io.teknek.reckoning.math.WrappedForkJoinPool;
 import io.teknek.reckoning.safetensors.Config;
 import io.teknek.reckoning.safetensors.WeightLoader;
 import io.teknek.reckoning.tensor.KvBufferCacheSettings;
+import io.teknek.reckoning.tensor.kv.KvCacheGroupPolicy;
 import io.teknek.reckoning.tensor2.Lighter;
 import io.teknek.reckoning.tensor2.TensorRef;
 import io.teknek.reckoning.toolcallparser.ToolCallParser;
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.stream.IntStream;
 
 import io.teknek.reckoning.tensor.kv.KvCacheSession;
@@ -43,6 +45,20 @@ public class Spark2_5Model extends LlamaModel {
         super(inferenceType, config, weights, tokenizer, workingMemoryDType, workingQType, modelQType,
                 metricRegistry, kvBufferCacheSettings, toolCallParser, pool, tensorParallelContext,
                 tensorParallelCollectives, outputHeadQuantization, lighter);
+        configureSparkCacheGroups((Spark2_5Config) config);
+    }
+
+    private void configureSparkCacheGroups(Spark2_5Config sparkConfig) {
+        int slidingWindow = java.util.Objects.requireNonNull(sparkConfig.slidingWindow,
+                "Spark sliding_window is required for grouped cache configuration");
+        List<KvCacheGroupPolicy> policies = new ArrayList<>();
+        policies.add(KvCacheGroupPolicy.full("full"));
+        policies.add(KvCacheGroupPolicy.sliding("sliding", slidingWindow));
+        int[] layerGroups = new int[sparkConfig.layerTypes.size()];
+        for (int layer = 0; layer < layerGroups.length; layer++) {
+            layerGroups[layer] = "sliding_attention".equals(sparkConfig.layerTypes.get(layer)) ? 1 : 0;
+        }
+        kvCacheManager().configureGroups(policies, layerGroups);
     }
 
     @Override
@@ -78,14 +94,14 @@ public class Spark2_5Model extends LlamaModel {
     }
 
     @Override
-    public PlannedTensorRef forward(PlannedTensorRef embedding, int startPos, KvCacheSession kvSession,
+    public PlannedTensorRef forward(PlannedTensorRef embedding, int startPos, KvCacheSession pastKeyValues,
             Optional<Consumer<List<TensorRef>>> tensorReducer, ForwardPhase phase,
             int batchSize, int sequenceLength, int[] attentionMask, ForwardContext ignored) {
         Spark2_5Config sparkConfig = (Spark2_5Config) config;
         try (Spark2_5RopeCache cache = Spark2_5RopeCache.create(sparkConfig, startPos, sequenceLength, lighter)) {
             Spark2_5ForwardContext context = new Spark2_5ForwardContext(cache,
                     positions(startPos, sequenceLength), attentionMask);
-            return super.forward(embedding, startPos, kvSession, tensorReducer, phase,
+            return super.forward(embedding, startPos, pastKeyValues, tensorReducer, phase,
                     batchSize, sequenceLength, attentionMask, context);
         }
     }

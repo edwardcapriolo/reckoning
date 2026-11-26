@@ -37,7 +37,9 @@ class PanamaOps implements TensorOps, CompositeOpsProvider {
             sigmoidBf16(target);
             return Either.Right(null);
         }
-        if (target.dType() != DType.F32) return Either.Left(OpSupport.Unsupported);
+        if (target.dType() != DType.F32) {
+            return Either.Left(OpSupport.Unsupported);
+        }
         MemorySegment memory = target.memorySegment();
         int columns = target.shape().last();
         int upper = F32_SPECIES.loopBound(columns);

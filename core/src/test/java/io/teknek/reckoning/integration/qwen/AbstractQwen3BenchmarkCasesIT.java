@@ -24,7 +24,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
-abstract class AbstractQwen3BenchmarkCasesIT {
+public abstract class AbstractQwen3BenchmarkCasesIT {
 
     protected abstract String owner();
 
@@ -43,7 +43,7 @@ abstract class AbstractQwen3BenchmarkCasesIT {
     }
 
     @Test
-    void firstTwoBenchmarkCases() {
+    public void firstTwoBenchmarkCases() {
         boolean previousProfiling = InferenceProfiler.isEnabled();
         InferenceProfiler.setEnabled(true);
         ModelFetcher fetch = new ModelFetcher(owner(), modelName()).withDownload(downloadModel());

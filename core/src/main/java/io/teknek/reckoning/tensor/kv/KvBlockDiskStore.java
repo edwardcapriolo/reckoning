@@ -54,13 +54,13 @@ public final class KvBlockDiskStore implements AutoCloseable {
             String tokenizerFingerprint, String runtimeSalt, String ropeConfigHash, String attentionConfigHash,
             int blockSize, int layers, int kvLength, DType keyDType, DType valueDType, KvBlockLayout layout,
             int turboQuantBits, int tensorParallelSize, int tensorParallelRank, long assignmentEpoch,
-            String localShardId) {
+            String localShardId, String groupId) {
         private static NamespaceKey from(KvBlockKey key) {
             return new NamespaceKey(key.formatVersion(), key.modelCacheId(), key.adapterFingerprint(),
                     key.tokenizerFingerprint(), key.runtimeSalt(), key.ropeConfigHash(), key.attentionConfigHash(),
                     key.blockSize(), key.layers(), key.kvLength(), key.keyDType(), key.valueDType(), key.layout(),
                     key.turboQuantBits(), key.tensorParallelSize(), key.tensorParallelRank(), key.assignmentEpoch(),
-                    key.localShardId());
+                    key.localShardId(), key.groupId());
         }
     }
 

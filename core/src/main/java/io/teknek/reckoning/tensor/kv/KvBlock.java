@@ -46,6 +46,14 @@ public final class KvBlock implements AutoCloseable {
         return tokenCount;
     }
 
+    int layerCount() {
+        return layers;
+    }
+
+    int kvLength() {
+        return kvLength;
+    }
+
     public int startPosition() {
         return blockIndex * blockSize;
     }

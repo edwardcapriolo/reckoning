@@ -1,6 +1,5 @@
 package io.teknek.reckoning.tensor2;
 
-import io.dropwizard.metrics5.MetricName;
 import io.dropwizard.metrics5.MetricRegistry;
 import io.teknek.reckoning.DType;
 import io.teknek.reckoning.tensor.TensorShape;
@@ -119,10 +118,8 @@ class Tensor2LighterDotProductRowsFuzzTest {
                             candidate.name() + " row=" + row + " column=" + column);
                 }
             }
-            assertEquals(1, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, candidate.kind().name()))).getCount());
-            assertEquals(0, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, TensorProviderKind.NAIVE.name()))).getCount());
+            assertEquals(1, dotProductRowsCount(metrics, candidate.kind()));
+            assertEquals(0, dotProductRowsCount(metrics, TensorProviderKind.NAIVE));
         }
     }
 
@@ -155,10 +152,8 @@ class Tensor2LighterDotProductRowsFuzzTest {
                         candidate.name());
                 assertEquals(0.0f, actualOutputParent.get(0, 2), 0.0f, "slice output must not write row zero");
             }
-            assertEquals(1, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, candidate.kind().name()))).getCount());
-            assertEquals(0, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, TensorProviderKind.NAIVE.name()))).getCount());
+            assertEquals(1, dotProductRowsCount(metrics, candidate.kind()));
+            assertEquals(0, dotProductRowsCount(metrics, TensorProviderKind.NAIVE));
         }
     }
 
@@ -295,10 +290,8 @@ class Tensor2LighterDotProductRowsFuzzTest {
                     Threading.PROVIDER);
 
             assertEqual(c, expectedOutput, actualOutput, 0.03f);
-            assertEquals(1, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, candidate.kind().name()))).getCount());
-            assertEquals(0, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, TensorProviderKind.NAIVE.name()))).getCount());
+            assertEquals(1, dotProductRowsCount(metrics, candidate.kind()));
+            assertEquals(0, dotProductRowsCount(metrics, TensorProviderKind.NAIVE));
         }
     }
 
@@ -329,11 +322,8 @@ class Tensor2LighterDotProductRowsFuzzTest {
                 assertEquals(expectedOutput.get(0, column), actualOutput.get(0, column), 0.03f,
                         candidate.name() + " column=" + column);
             }
-            assertEquals(attentionLength / chunkSize,
-                    metrics.meter(new MetricName("tensor2.dot_product_rows",
-                            Map.of(Lighter.TENSOR_OP_KEY, candidate.kind().name()))).getCount());
-            assertEquals(0, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, TensorProviderKind.NAIVE.name()))).getCount());
+            assertEquals(attentionLength / chunkSize, dotProductRowsCount(metrics, candidate.kind()));
+            assertEquals(0, dotProductRowsCount(metrics, TensorProviderKind.NAIVE));
         }
     }
 
@@ -408,11 +398,17 @@ class Tensor2LighterDotProductRowsFuzzTest {
                 assertEquals(actualBatch.get(rows - 1, column), actualSingle.get(0, column), 0.03f,
                         candidate.name() + " batch versus single column=" + column);
             }
-            assertEquals(8, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, candidate.kind().name()))).getCount());
-            assertEquals(0, metrics.meter(new MetricName("tensor2.dot_product_rows",
-                    Map.of(Lighter.TENSOR_OP_KEY, TensorProviderKind.NAIVE.name()))).getCount());
+            assertEquals(8, dotProductRowsCount(metrics, candidate.kind()));
+            assertEquals(0, dotProductRowsCount(metrics, TensorProviderKind.NAIVE));
         }
+    }
+
+    private static long dotProductRowsCount(MetricRegistry metrics, TensorProviderKind provider) {
+        return metrics.getMeters().entrySet().stream()
+                .filter(entry -> "tensor2.dot_product_rows".equals(entry.getKey().getKey()))
+                .filter(entry -> provider.name().equals(entry.getKey().getTags().get(Lighter.TENSOR_OP_KEY)))
+                .mapToLong(entry -> entry.getValue().getCount())
+                .sum();
     }
 
     static Stream<Arguments> f32Cases() {

@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -33,6 +35,11 @@ public final class KvCacheSession implements AutoCloseable {
     private final KvBufferCacheSettings settings;
     private final Lighter lighter;
     private final int[] layerKvLengths;
+    private final KvCacheGroupPolicy groupPolicy;
+    private final Map<String, KvCacheSession> groupSessions;
+    private final String[] groupIdsByIndex;
+    private final int[] layerGroupIndexes;
+    private final int[] layerLocalIndexes;
     private final NavigableMap<Integer, KvBlock> committedBlocks = new TreeMap<>();
     private final NavigableMap<Integer, KvBlockLease> committedBlockLeases = new TreeMap<>();
     private final NavigableMap<Integer, MutableKvBlock> mutableBlocks = new TreeMap<>();
@@ -44,6 +51,14 @@ public final class KvCacheSession implements AutoCloseable {
             MetricRegistry metricRegistry, boolean trackReadViews,
             KvBufferCacheSettings settings, Lighter lighter,
             int[] layerKvLengths) {
+        this(layers, contextLength, kvLength, blockSize, dtype, metricRegistry, trackReadViews,
+                settings, lighter, layerKvLengths, KvCacheGroupPolicy.full());
+    }
+
+    KvCacheSession(int layers, int contextLength, int kvLength, int blockSize, DType dtype,
+            MetricRegistry metricRegistry, boolean trackReadViews,
+            KvBufferCacheSettings settings, Lighter lighter, int[] layerKvLengths,
+            KvCacheGroupPolicy groupPolicy) {
         this.sessionId = "kv2-session-" + SESSION_SEQUENCE.incrementAndGet();
         this.layers = layers;
         this.contextLength = contextLength;
@@ -55,6 +70,63 @@ public final class KvCacheSession implements AutoCloseable {
         this.settings = settings;
         this.lighter = Objects.requireNonNull(lighter, "lighter");
         this.layerKvLengths = layerKvLengths == null ? null : layerKvLengths.clone();
+        this.groupPolicy = Objects.requireNonNull(groupPolicy, "groupPolicy");
+        this.groupSessions = Map.of();
+        this.groupIdsByIndex = null;
+        this.layerGroupIndexes = null;
+        this.layerLocalIndexes = null;
+    }
+
+    KvCacheSession(int layers, int contextLength, int kvLength, int blockSize, DType dtype,
+            MetricRegistry metricRegistry, boolean trackReadViews, KvBufferCacheSettings settings,
+            Lighter lighter, int[] layerKvLengths, List<KvCacheGroupPolicy> policies,
+            int[] layerGroupIndexes) {
+        this.sessionId = "kv2-session-" + SESSION_SEQUENCE.incrementAndGet();
+        this.layers = layers;
+        this.contextLength = contextLength;
+        this.kvLength = kvLength;
+        this.blockSize = blockSize;
+        this.dtype = dtype;
+        this.metricRegistry = metricRegistry;
+        this.trackReadViews = trackReadViews;
+        this.settings = settings;
+        this.lighter = Objects.requireNonNull(lighter, "lighter");
+        this.layerKvLengths = layerKvLengths == null ? null : layerKvLengths.clone();
+        this.groupPolicy = KvCacheGroupPolicy.full("coordinator");
+        this.layerGroupIndexes = layerGroupIndexes.clone();
+        this.groupIdsByIndex = new String[policies.size()];
+        this.layerLocalIndexes = new int[layers];
+        LinkedHashMap<String, List<Integer>> layersByGroup = new LinkedHashMap<>();
+        for (KvCacheGroupPolicy policy : policies) {
+            layersByGroup.put(policy.groupId(), new ArrayList<>());
+        }
+        for (int layer = 0; layer < layers; layer++) {
+            int groupIndex = layerGroupIndexes[layer];
+            List<Integer> localLayers = layersByGroup.get(policies.get(groupIndex).groupId());
+            layerLocalIndexes[layer] = localLayers.size();
+            localLayers.add(layer);
+        }
+        LinkedHashMap<String, KvCacheSession> children = new LinkedHashMap<>();
+        for (int groupIndex = 0; groupIndex < policies.size(); groupIndex++) {
+            KvCacheGroupPolicy policy = policies.get(groupIndex);
+            groupIdsByIndex[groupIndex] = policy.groupId();
+            List<Integer> globalLayers = layersByGroup.get(policy.groupId());
+            int[] localWidths = null;
+            if (layerKvLengths != null) {
+                localWidths = new int[globalLayers.size()];
+                for (int local = 0; local < globalLayers.size(); local++) {
+                    localWidths[local] = layerKvLengths[globalLayers.get(local)];
+                }
+            }
+            int localKvLength = localWidths == null ? kvLength : 0;
+            if (localWidths != null) {
+                for (int width : localWidths) localKvLength = Math.max(localKvLength, width);
+            }
+            children.put(policy.groupId(), new KvCacheSession(globalLayers.size(), contextLength,
+                    localKvLength, blockSize, dtype, metricRegistry, trackReadViews, settings,
+                    lighter, localWidths, policy));
+        }
+        this.groupSessions = Map.copyOf(children);
     }
 
     KvCacheSession(int layers, int contextLength, int kvLength, int blockSize, DType dtype,
@@ -72,15 +144,84 @@ public final class KvCacheSession implements AutoCloseable {
         return sessionId;
     }
 
+    public KvCacheGroupPolicy groupPolicy() {
+        return groupPolicy;
+    }
+
+    public boolean isGrouped() {
+        return !groupSessions.isEmpty();
+    }
+
+    public KvCacheSession groupSession(String groupId) {
+        KvCacheSession session = groupSessions.get(Objects.requireNonNull(groupId, "groupId"));
+        return Objects.requireNonNull(session, "unknown group: " + groupId);
+    }
+
+    public KvCacheGroupPolicy groupPolicyForLayer(int layer) {
+        if (!isGrouped()) {
+            validateLayer(layer);
+            return groupPolicy;
+        }
+        validateLayer(layer);
+        return groupSessionAt(layer).groupPolicy;
+    }
+
+    public List<String> groupIds() {
+        if (!isGrouped()) return List.of(groupPolicy.groupId());
+        return List.copyOf(java.util.Arrays.asList(groupIdsByIndex));
+    }
+
+    public int layerCount() {
+        return layers;
+    }
+
+    public int kvLength() {
+        return kvLength;
+    }
+
+    /** Sets absolute length before attaching grouped retained blocks. */
+    public void prepareGroupedRestore(int restoredLength) {
+        requireOpen();
+        Preconditions.checkState(isGrouped(), "only grouped sessions require grouped restore");
+        Preconditions.checkArgument(restoredLength >= 0 && restoredLength <= contextLength,
+                "restored length out of bounds");
+        for (KvCacheSession group : groupSessions.values()) group.setLengthForRestore(restoredLength);
+        length = restoredLength;
+    }
+
+    private void setLengthForRestore(int restoredLength) {
+        requireOpen();
+        Preconditions.checkArgument(restoredLength >= length && restoredLength <= contextLength,
+                "restored length out of bounds");
+        length = restoredLength;
+    }
+
+    public int persistentStartPosition() {
+        Preconditions.checkState(!isGrouped(), "grouped sessions require a layer or group id");
+        return groupPolicy.persistentStart(length);
+    }
+
+    public int persistentTokenCount() {
+        Preconditions.checkState(!isGrouped(), "grouped sessions require a layer or group id");
+        return groupPolicy.persistentTokenCount(length);
+    }
+
+    public List<Integer> committedBlockIndexes() {
+        Preconditions.checkState(!isGrouped(), "grouped sessions require a group session");
+        return List.copyOf(committedBlocks.keySet());
+    }
+
     public int blockSize() {
         return blockSize;
     }
 
     int layerKvLength(int layer) {
+        if (isGrouped()) return groupSessionAt(layer).layerKvLength(layerLocalIndexes[layer]);
         return layerKvLengths == null ? kvLength : layerKvLengths[layer];
     }
 
     public boolean isHeterogeneous() {
+        if (isGrouped()) return groupSessionAt(0).isHeterogeneous();
         return layerKvLengths != null;
     }
 
@@ -93,6 +234,7 @@ public final class KvCacheSession implements AutoCloseable {
     }
 
     public List<KvBlock> committedBlocks() {
+        Preconditions.checkState(!isGrouped(), "grouped sessions require a group session");
         return List.copyOf(committedBlocks.values());
     }
 
@@ -134,24 +276,55 @@ public final class KvCacheSession implements AutoCloseable {
         validateLayer(layer);
         Preconditions.checkArgument(visibleTokens >= 0 && visibleTokens <= length,
                 "visibleTokens must be within session length");
-        return new KvReadView(this, layer, visibleTokens, Objects.requireNonNull(pattern, "pattern"));
+        return new KvReadView(this, layer, visibleTokens, Objects.requireNonNull(pattern, "pattern"), 0);
+    }
+
+    public KvReadView readView(int layer, int visibleTokens, AttentionPattern pattern, int currentRows) {
+        requireOpen();
+        validateLayer(layer);
+        Preconditions.checkArgument(visibleTokens >= 0 && visibleTokens <= length,
+                "visibleTokens must be within session length");
+        Preconditions.checkArgument(currentRows >= 0 && visibleTokens + currentRows <= contextLength,
+                "current rows exceed context length");
+        return new KvReadView(this, layer, visibleTokens, Objects.requireNonNull(pattern, "pattern"), currentRows);
     }
 
     TensorRef keyRowCopyRef(int layer, int position) {
+        if (isGrouped()) return groupSessionAt(layer).keyRowCopyRef(layerLocalIndexes[layer], position);
         return rowCopyRef(layer, position, true);
     }
 
     TensorRef valueRowCopyRef(int layer, int position) {
+        if (isGrouped()) return groupSessionAt(layer).valueRowCopyRef(layerLocalIndexes[layer], position);
         return rowCopyRef(layer, position, false);
     }
 
     void write(CacheExecutionMode mode, int layer, int position, TensorRef key, TensorRef value) {
         requireOpen();
+        if (isGrouped()) {
+            groupSessionAt(layer).write(mode, layerLocalIndexes[layer], position, key, value);
+            return;
+        }
+        writeLocal(mode, layer, position, key, value, false);
+    }
+
+    void writeAbsoluteForRestore(int layer, int position, TensorRef key, TensorRef value) {
+        requireOpen();
+        Preconditions.checkState(!isGrouped(), "restore rows must target a group session");
+        writeLocal(CacheExecutionMode.PREFILL_UPDATE_CACHE, layer, position, key, value, true);
+    }
+
+    private void writeLocal(CacheExecutionMode mode, int layer, int position, TensorRef key, TensorRef value,
+            boolean restore) {
         Preconditions.checkArgument(mode != CacheExecutionMode.DENOISE_BLOCK_NO_UPDATE
                         && mode != CacheExecutionMode.READ_PREFIX_NO_UPDATE,
                 mode + " must not write KV rows");
         validateLayer(layer);
-        validatePosition(position);
+        if (restore) {
+            Preconditions.checkArgument(position >= 0 && position < contextLength, "position out of bounds");
+        } else {
+            validatePosition(position);
+        }
         int blockIndex = position / blockSize;
         Preconditions.checkArgument(!committedBlocks.containsKey(blockIndex), "cannot overwrite committed KV block");
         TensorRef keyToWrite = key;
@@ -179,13 +352,26 @@ public final class KvCacheSession implements AutoCloseable {
         requireOpen();
         Preconditions.checkArgument(newLength >= length, "newLength must be >= current length");
         Preconditions.checkArgument(newLength <= contextLength, "newLength exceeds context length");
-        length = newLength;
-        commitFullBlocksBefore(length);
+        if (isGrouped()) {
+            for (KvCacheSession group : groupSessions.values()) {
+                group.advanceLength(newLength);
+            }
+            length = newLength;
+        } else {
+            length = newLength;
+            commitFullBlocksBefore(length);
+            evictSlidingBlocks(length);
+        }
     }
 
     public void crop(int newLength) {
         requireOpen();
         Preconditions.checkArgument(newLength >= 0 && newLength <= length, "newLength out of bounds");
+        if (isGrouped()) {
+            for (KvCacheSession group : groupSessions.values()) group.crop(newLength);
+            length = newLength;
+            return;
+        }
         int lastBlockToKeep = newLength == 0 ? -1 : (newLength - 1) / blockSize;
         int rowsInLastBlock = newLength == 0 ? 0 : ((newLength - 1) % blockSize) + 1;
 
@@ -201,6 +387,7 @@ public final class KvCacheSession implements AutoCloseable {
             splitCommittedTailBlock(lastBlockToKeep, newLength);
         }
         length = newLength;
+        evictSlidingBlocks(length);
         metricRegistry.meter("kvcache.v2.crop").mark();
     }
 
@@ -236,6 +423,7 @@ public final class KvCacheSession implements AutoCloseable {
     /** Transfers an owned committed block out of this session for shared-block admission. */
     public KvBlock detachCommittedBlock(int blockIndex) {
         requireOpen();
+        Preconditions.checkState(!isGrouped(), "grouped sessions require group-specific prefix ownership");
         KvBlockLease lease = committedBlockLeases.remove(blockIndex);
         Preconditions.checkState(lease == null, "cannot detach a leased KV block");
         KvBlock block = committedBlocks.remove(blockIndex);
@@ -243,9 +431,15 @@ public final class KvCacheSession implements AutoCloseable {
         return block;
     }
 
+    public KvBlock detachCommittedBlock(String groupId, int blockIndex) {
+        Preconditions.checkState(isGrouped(), "group-specific ownership requires a grouped session");
+        return groupSession(groupId).detachCommittedBlock(blockIndex);
+    }
+
     /** Attaches a retained shared immutable block lease to this session. */
     public void attachCommittedBlock(KvBlockLease lease) {
         requireOpen();
+        Preconditions.checkState(!isGrouped(), "grouped sessions require group-specific prefix ownership");
         Objects.requireNonNull(lease, "lease");
         KvBlock block = lease.block();
         Preconditions.checkArgument(block.tokenCount() == blockSize,
@@ -263,35 +457,58 @@ public final class KvCacheSession implements AutoCloseable {
         metricRegistry.meter("kvcache.v2.block.attach").mark();
     }
 
+    public void attachCommittedBlock(String groupId, KvBlockLease lease) {
+        Preconditions.checkState(isGrouped(), "group-specific ownership requires a grouped session");
+        groupSession(groupId).attachCommittedBlock(lease);
+    }
+
     List<Integer> attachedLeaseBlockIndexes() {
         return Collections.unmodifiableList(new ArrayList<>(committedBlockLeases.keySet()));
     }
 
     public boolean committedBlockIsLeased(int blockIndex) {
+        Preconditions.checkState(!isGrouped(), "grouped sessions require group-specific prefix ownership");
         return committedBlockLeases.containsKey(blockIndex);
     }
 
+    public boolean committedBlockIsLeased(String groupId, int blockIndex) {
+        Preconditions.checkState(isGrouped(), "group-specific ownership requires a grouped session");
+        return groupSession(groupId).committedBlockIsLeased(blockIndex);
+    }
+
     TensorRef copyVisibleKeysRef(int layer, int visibleTokens) {
+        if (isGrouped()) return groupSessionAt(layer).copyVisibleKeysRef(layerLocalIndexes[layer], visibleTokens);
         return copyVisible(layer, visibleTokens, true);
     }
 
     TensorRef copyVisibleValuesRef(int layer, int visibleTokens) {
+        if (isGrouped()) return groupSessionAt(layer).copyVisibleValuesRef(layerLocalIndexes[layer], visibleTokens);
         return copyVisible(layer, visibleTokens, false);
     }
 
     void copyKeyRows(int layer, int positionStart, int rowCount, TensorRef destination, int destinationRowStart) {
+        if (isGrouped()) {
+            groupSessionAt(layer).copyKeyRows(layerLocalIndexes[layer], positionStart, rowCount, destination, destinationRowStart);
+            return;
+        }
         copyRows(layer, positionStart, rowCount, destination, destinationRowStart, true);
     }
 
     void copyValueRows(int layer, int positionStart, int rowCount, TensorRef destination, int destinationRowStart) {
+        if (isGrouped()) {
+            groupSessionAt(layer).copyValueRows(layerLocalIndexes[layer], positionStart, rowCount, destination, destinationRowStart);
+            return;
+        }
         copyRows(layer, positionStart, rowCount, destination, destinationRowStart, false);
     }
 
     TensorRef[] keyPageRefs(int layer, int visibleTokens) {
+        if (isGrouped()) return groupSessionAt(layer).keyPageRefs(layerLocalIndexes[layer], visibleTokens);
         return pages(layer, visibleTokens, true);
     }
 
     TensorRef[] valuePageRefs(int layer, int visibleTokens) {
+        if (isGrouped()) return groupSessionAt(layer).valuePageRefs(layerLocalIndexes[layer], visibleTokens);
         return pages(layer, visibleTokens, false);
     }
 
@@ -361,24 +578,27 @@ public final class KvCacheSession implements AutoCloseable {
         if (visibleTokens == 0) {
             return new TensorRef[0];
         }
-        int pageCount = (visibleTokens + blockSize - 1) / blockSize;
+        int firstBlock = groupPolicy.type() == KvCacheGroupType.SLIDING
+                ? groupPolicy.persistentStart(length) / blockSize : 0;
+        int pageCount = Math.max(0, (visibleTokens + blockSize - 1) / blockSize - firstBlock);
         // TensorRef-backed pages are caller-owned views and are closed after each attention pass.
-        return buildPages(layer, pageCount, key);
+        return buildPages(layer, firstBlock, pageCount, key);
     }
 
-    private TensorRef[] buildPages(int layer, int pageCount, boolean key) {
+    private TensorRef[] buildPages(int layer, int firstBlock, int pageCount, boolean key) {
         TensorRef[] pages = new TensorRef[pageCount];
         try {
-            for (int blockIndex = 0; blockIndex < pageCount; blockIndex++) {
+            for (int page = 0; page < pageCount; page++) {
+                int blockIndex = firstBlock + page;
                 KvBlock committed = committedBlocks.get(blockIndex);
                 if (committed != null) {
-                    pages[blockIndex] = key ? committed.keyPageView(layer) : committed.valuePageView(layer);
+                    pages[page] = key ? committed.keyPageView(layer) : committed.valuePageView(layer);
                 } else {
                     MutableKvBlock mutable = mutableBlocks.get(blockIndex);
                     if (mutable == null) {
                         throw new IllegalStateException("No KV block for block index " + blockIndex);
                     }
-                    pages[blockIndex] = key ? mutable.keyPageView(layer) : mutable.valuePageView(layer);
+                    pages[page] = key ? mutable.keyPageView(layer) : mutable.valuePageView(layer);
                 }
             }
             return pages;
@@ -396,6 +616,7 @@ public final class KvCacheSession implements AutoCloseable {
         requireOpen();
         validateLayer(layer);
         Preconditions.checkArgument(position >= 0 && position < length, "position out of visible length");
+        validateReadablePosition(position);
         int blockIndex = position / blockSize;
         KvBlock committed = committedBlocks.get(blockIndex);
         if (committed != null) {
@@ -419,7 +640,9 @@ public final class KvCacheSession implements AutoCloseable {
     private TensorRef rowViewRef(int layer, int position, boolean key) {
         requireOpen();
         validateLayer(layer);
+        if (isGrouped()) return groupSessionAt(layer).rowViewRef(layerLocalIndexes[layer], position, key);
         Preconditions.checkArgument(position >= 0 && position < length, "position out of visible length");
+        validateReadablePosition(position);
         if (isHeterogeneous()) {
             return rowCopyRef(layer, position, key);
         }
@@ -454,6 +677,26 @@ public final class KvCacheSession implements AutoCloseable {
         }
     }
 
+    /** Removes only complete blocks that no longer contain a persistent sliding row. */
+    private void evictSlidingBlocks(int newLength) {
+        if (groupPolicy.type() != KvCacheGroupType.SLIDING) return;
+        int firstPersistentPosition = groupPolicy.persistentStart(newLength);
+        int firstRetainedBlock = firstPersistentPosition / blockSize;
+        ArrayList<Integer> committedToRemove = new ArrayList<>(
+                committedBlocks.headMap(firstRetainedBlock, false).keySet());
+        for (Integer blockIndex : committedToRemove) {
+            closeCommittedBlock(committedBlocks.remove(blockIndex), committedBlockLeases.remove(blockIndex));
+            metricRegistry.meter("kvcache.v2.sliding.block.evict").mark();
+        }
+        ArrayList<Integer> mutableToRemove = new ArrayList<>(
+                mutableBlocks.headMap(firstRetainedBlock, false).keySet());
+        for (Integer blockIndex : mutableToRemove) {
+            MutableKvBlock block = mutableBlocks.remove(blockIndex);
+            if (block != null) block.close();
+            metricRegistry.meter("kvcache.v2.sliding.block.evict").mark();
+        }
+    }
+
     private void closeCommittedBlock(KvBlock block, KvBlockLease lease) {
         if (lease != null) {
             lease.close();
@@ -468,6 +711,19 @@ public final class KvCacheSession implements AutoCloseable {
 
     private void validatePosition(int position) {
         Preconditions.checkArgument(position >= 0 && position < contextLength, "position out of bounds");
+        Preconditions.checkArgument(position >= groupPolicy.persistentStart(length),
+                "position is outside the persistent %s KV range", groupPolicy.groupId());
+    }
+
+    private void validateReadablePosition(int position) {
+        Preconditions.checkArgument(position >= groupPolicy.persistentStart(length),
+                "position is outside the persistent %s KV range", groupPolicy.groupId());
+    }
+
+    private KvCacheSession groupSessionAt(int layer) {
+        validateLayer(layer);
+        int groupIndex = layerGroupIndexes[layer];
+        return groupSessions.get(groupIdsByIndex[groupIndex]);
     }
 
     private void requireOpen() {
@@ -479,6 +735,7 @@ public final class KvCacheSession implements AutoCloseable {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
+            groupSessions.values().forEach(KvCacheSession::close);
             for (var entry : committedBlocks.entrySet()) {
                 closeCommittedBlock(entry.getValue(), committedBlockLeases.get(entry.getKey()));
             }
