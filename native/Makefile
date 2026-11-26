@@ -22,6 +22,7 @@
 #   TENSOR2_LIB_NAME - the name of the Tensor2 native library
 #   GPU_LIB_NAME     - the name of the GPU native library
 #   LIB_EXT      - the extension of the native library (e.g. a / dll)
+LIB_DIR ?= target/native-test
 OBJ_DIR ?= $(LIB_DIR)
 
 #───────────────────────────────────────────────────────────────────────────────
@@ -50,6 +51,9 @@ SRC2_DIR := src/main/c/gpu
 SRCS2    := $(wildcard $(SRC2_DIR)/*.c)
 OBJS2    := $(SRCS2:$(SRC2_DIR)/%.c=$(OBJ2_DIR)/%.o)
 BF16_TEST := $(OBJ_DIR)/test_bf16_gemm
+PYTORCH_BF16_GEMM_TEST := $(OBJ_DIR)/test_pytorch_bf16_gemm
+F32_BF16_GEMM_TEST := $(OBJ_DIR)/test_f32_bf16_gemm
+ACCELERATE_GEMM_TEST := $(OBJ_DIR)/test_accelerate_gemm
 GPU_HEADER_TEST := $(OBJ_DIR)/test_gpu_header.o
 TENSOR2_NATIVE_TEST := $(OBJ_DIR)/test_tensor2_native
 
@@ -121,6 +125,27 @@ $(BF16_TEST): src/test/c/test_bf16_gemm.c $(SRC_DIR)/vector_simd.c
 
 test-bf16-gemm-run: $(BF16_TEST)
 	$(BF16_TEST)
+
+$(PYTORCH_BF16_GEMM_TEST): src/test/c/test_pytorch_bf16_gemm.c $(SRC_DIR)/vector_simd.c
+	mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) -I$(SRC_DIR) $^ -o $@ -lm $(TEST_LDFLAGS)
+
+test-pytorch-bf16-gemm-run: $(PYTORCH_BF16_GEMM_TEST)
+	$(PYTORCH_BF16_GEMM_TEST)
+
+$(F32_BF16_GEMM_TEST): src/test/c/test_f32_bf16_gemm.c $(SRC_DIR)/vector_simd.c
+	mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) -I$(SRC_DIR) $^ -o $@ -lm $(TEST_LDFLAGS)
+
+test-f32-bf16-gemm-run: $(F32_BF16_GEMM_TEST)
+	$(F32_BF16_GEMM_TEST)
+
+$(ACCELERATE_GEMM_TEST): src/test/c/test_accelerate_gemm.c $(SRC_DIR)/vector_simd.c
+	mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) -I$(SRC_DIR) $^ -o $@ -lm $(TEST_LDFLAGS)
+
+test-accelerate-gemm-run: $(ACCELERATE_GEMM_TEST)
+	$(ACCELERATE_GEMM_TEST)
 
 $(GPU_HEADER_TEST): src/test/c/test_gpu_header.c
 	mkdir -p $(OBJ_DIR)
