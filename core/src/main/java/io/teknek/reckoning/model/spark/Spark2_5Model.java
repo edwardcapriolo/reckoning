@@ -23,6 +23,8 @@ import org.slf4j.LoggerFactory;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.List;
+import java.util.stream.IntStream;
+
 import io.teknek.reckoning.tensor.kv.KvCacheSession;
 import io.teknek.reckoning.tensorlib.PlannedTensorRef;
 
@@ -107,8 +109,8 @@ public class Spark2_5Model extends LlamaModel {
         layerWeights = new Spark2_5LayerWeights[config.numberOfLayers];
         Spark2_5Config sparkConfig = (Spark2_5Config) config;
         TransformerBlock2[] blocks = new TransformerBlock2[config.numberOfLayers];
-        for (int i = 0; i < config.numberOfLayers; i++) {
-            long layerStart = System.nanoTime();
+
+        IntStream.range(0, config.numberOfLayers).parallel().forEach(i -> {
             String base = "model.layers." + i + ".";
             String attention = base + "self_attn.";
             String mlp = base + "mlp.";
@@ -130,22 +132,8 @@ public class Spark2_5Model extends LlamaModel {
                     registerModelTensorRef(loadAndMaybeQuantizedExcluding1DTensors(
                             mlp + "down_proj.weight", weights::loadRef, qType)));
             blocks[i] = Spark2_5TransformerBlock.create(this, sparkConfig, i, layerWeights[i], lighter);
-            LOGGER.info("spark layer loaded layer={} type={} elapsed_ms={}", i, sparkConfig.layerTypes.get(i),
-                    (System.nanoTime() - layerStart) / 1_000_000.0);
-        }
+        });
         return blocks;
     }
 
-    record ProjectedQkv(
-            TensorRef query,
-            TensorRef key,
-            TensorRef value
-    ) implements AutoCloseable {
-        @Override
-        public void close() {
-            query.close();
-            key.close();
-            value.close();
-        }
-    }
 }

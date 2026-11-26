@@ -1933,8 +1933,90 @@ void gemm_bf16(int flags, const short *a, int aoffset, const short *b, int boffs
            ? gemm(0, m, n0, n0 + n, gemm_bf16_512, p)
            : gemm(0, m, n0, n0 + n, gemm_bf16_256, p);
 #else
-    gemm(0, m, n0, n0 + n, gemm_bf16_128_arm, p);
+    // Decode uses one input row. Avoid the general tile path for this case.
+    if (m == 1 && rs == NULL && r != NULL) {
+        gemm_bf16_pytorch_transa(a, aoffset, b, boffset, r, roffset,
+                                 m, n0, n, k, lda, ldb, ldc);
+    } else {
+        gemm(0, m, n0, n0 + n, gemm_bf16_128_arm, p);
+    }
 #endif
+}
+
+// Equivalent to PyTorch's BF16 transposed-B GEMM path: accumulate in F32
+// while reusing each weight value across the output rows.
+void gemm_bf16_pytorch(const short *a, int aoffset, const short *b, int boffset,
+                       float *r, int roffset, int m, int n0, int n, int k,
+                       int lda, int ldb, int ldc) {
+    for (int row = 0; row < m; row++) {
+        for (int col = n0; col < n0 + n; col++) {
+            r[ldc * row + col - roffset] = 0.0f;
+        }
+    }
+
+    for (int l = 0; l < k; l++) {
+        for (int col = n0; col < n0 + n; col++) {
+            float value = bf16_to_fp32(b[col * ldb + boffset + l]);
+            int row = 0;
+            for (; row + 3 < m; row += 4) {
+                r[ldc * (row + 0) + col - roffset] +=
+                        bf16_to_fp32(a[lda * (row + 0) + aoffset + l]) * value;
+                r[ldc * (row + 1) + col - roffset] +=
+                        bf16_to_fp32(a[lda * (row + 1) + aoffset + l]) * value;
+                r[ldc * (row + 2) + col - roffset] +=
+                        bf16_to_fp32(a[lda * (row + 2) + aoffset + l]) * value;
+                r[ldc * (row + 3) + col - roffset] +=
+                        bf16_to_fp32(a[lda * (row + 3) + aoffset + l]) * value;
+            }
+            for (; row < m; row++) {
+                r[ldc * row + col - roffset] +=
+                        bf16_to_fp32(a[lda * row + aoffset + l]) * value;
+            }
+        }
+    }
+}
+
+static inline float bf16_dot_fp32_arith(const short *left, const short *right, int length) {
+#if defined(__ARM_NEON__)
+    float32x4_t sum0 = vdupq_n_f32(0.0f);
+    float32x4_t sum1 = vdupq_n_f32(0.0f);
+    int index = 0;
+    for (; index + 8 <= length; index += 8) {
+        uint16x8_t left_bits = vld1q_u16((const uint16_t *) (left + index));
+        uint16x8_t right_bits = vld1q_u16((const uint16_t *) (right + index));
+        uint32x4_t left0 = vshll_n_u16(vget_low_u16(left_bits), 16);
+        uint32x4_t left1 = vshll_n_u16(vget_high_u16(left_bits), 16);
+        uint32x4_t right0 = vshll_n_u16(vget_low_u16(right_bits), 16);
+        uint32x4_t right1 = vshll_n_u16(vget_high_u16(right_bits), 16);
+        sum0 = vmlaq_f32(sum0, vreinterpretq_f32_u32(left0), vreinterpretq_f32_u32(right0));
+        sum1 = vmlaq_f32(sum1, vreinterpretq_f32_u32(left1), vreinterpretq_f32_u32(right1));
+    }
+    float result = vaddvq_f32(vaddq_f32(sum0, sum1));
+    for (; index < length; index++) {
+        result += bf16_to_fp32(left[index]) * bf16_to_fp32(right[index]);
+    }
+    return result;
+#else
+    float result = 0.0f;
+    for (int index = 0; index < length; index++) {
+        result += bf16_to_fp32(left[index]) * bf16_to_fp32(right[index]);
+    }
+    return result;
+#endif
+}
+
+// Equivalent to PyTorch's specialized BF16 gemm_transa path: one full-
+// precision dot product per output row, with vectorized BF16 arithmetic.
+void gemm_bf16_pytorch_transa(const short *a, int aoffset, const short *b, int boffset,
+                               float *r, int roffset, int m, int n0, int n, int k,
+                               int lda, int ldb, int ldc) {
+    for (int row = 0; row < m; row++) {
+        const short *input = a + lda * row + aoffset;
+        for (int col = n0; col < n0 + n; col++) {
+            const short *weight = b + ldb * col + boffset;
+            r[ldc * row + col - roffset] = bf16_dot_fp32_arith(input, weight, k);
+        }
+    }
 }
 
 void gemm_bf16_batch(int flags, int batch_num, const short *a, int aoffset, const short **b, int boffset, short **rs, float **r, int roffset, int m, int n0, int n, int k, int lda, int ldb, int ldc)
@@ -2164,8 +2246,62 @@ void gemm_f32_bf16(int flags, const float *a, int aoffset, const short *b, int b
            ? gemm(0, m, n0, n0 + n, gemm_f32_bf16_512, p)
            : gemm(0, m, n0, n0 + n, gemm_f32_bf16_256, p);
 #else
-    gemm(0, m, n0, n0 + n, gemm_f32_bf16_128_arm, p);
+    // Decode uses one input row. The transposed-B dot path avoids the
+    // general 5x5 tiler and is substantially faster for this narrow case.
+    if (m == 1) {
+        gemm_f32_bf16_transa(a, aoffset, b, boffset, rs, r, roffset,
+                             m, n0, n, k, lda, ldb, ldc);
+    } else {
+        gemm(0, m, n0, n0 + n, gemm_f32_bf16_128_arm, p);
+    }
 #endif
+}
+
+static inline float f32_bf16_dot_fp32_arith(const float *left, const short *right, int length) {
+#if defined(__ARM_NEON__)
+    float32x4_t sum0 = vdupq_n_f32(0.0f);
+    float32x4_t sum1 = vdupq_n_f32(0.0f);
+    int index = 0;
+    for (; index + 8 <= length; index += 8) {
+        uint16x8_t right_bits = vld1q_u16((const uint16_t *) (right + index));
+        uint32x4_t right0_bits = vshll_n_u16(vget_low_u16(right_bits), 16);
+        uint32x4_t right1_bits = vshll_n_u16(vget_high_u16(right_bits), 16);
+        float32x4_t right0 = vreinterpretq_f32_u32(right0_bits);
+        float32x4_t right1 = vreinterpretq_f32_u32(right1_bits);
+        sum0 = vmlaq_f32(sum0, vld1q_f32(left + index), right0);
+        sum1 = vmlaq_f32(sum1, vld1q_f32(left + index + 4), right1);
+    }
+    float result = vaddvq_f32(vaddq_f32(sum0, sum1));
+    for (; index < length; index++) {
+        result += left[index] * bf16_to_fp32(right[index]);
+    }
+    return result;
+#else
+    float result = 0.0f;
+    for (int index = 0; index < length; index++) {
+        result += left[index] * bf16_to_fp32(right[index]);
+    }
+    return result;
+#endif
+}
+
+// F32-input equivalent of PyTorch's specialized BF16 transposed-B path.
+void gemm_f32_bf16_transa(const float *a, int aoffset, const short *b, int boffset,
+                          short *cr, float *r, int roffset, int m, int n0, int n,
+                          int k, int lda, int ldb, int ldc) {
+    for (int row = 0; row < m; row++) {
+        const float *input = a + lda * row + aoffset;
+        for (int col = n0; col < n0 + n; col++) {
+            const short *weight = b + ldb * col + boffset;
+            float dot = f32_bf16_dot_fp32_arith(input, weight, k);
+            int output_index = ldc * row + col - roffset;
+            if (cr != NULL) {
+                cr[output_index] = fp32_to_bf16(dot);
+            } else if (r != NULL) {
+                r[output_index] = dot;
+            }
+        }
+    }
 }
 
 void gemm_f32_bf16_batch(int flags, int batch_num, const float *a, int aoffset, const short **b, int boffset, short **rs, float **r, int roffset, int m, int n0, int n, int k, int lda, int ldb, int ldc)
